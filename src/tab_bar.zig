@@ -58,7 +58,7 @@ const Tabs = struct {
         for (s.tabs.items(), 0..) |t, i| {
             const index: u8 = @intCast(i);
             const shown = index == s.tabs.current;
-            cx.render(Tab{ .name = s.names[t.node], .index = index, .shown = shown, .max_label = if (shown) max_label else if (label < min_label) 0 else label });
+            cx.render(Tab{ .name = s.tabName(&t), .index = index, .shown = shown, .max_label = if (shown) max_label else if (label < min_label) 0 else label });
         }
     }
 };

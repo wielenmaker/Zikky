@@ -11,6 +11,7 @@ const tabs = @import("tabs.zig");
 const syntax = @import("syntax.zig");
 const FindBar = @import("find_bar.zig").FindBar;
 const terminal = @import("terminal.zig");
+const save = @import("save.zig");
 const TermPanel = @import("term_view.zig").TermPanel;
 
 const ui = gooey.ui;
@@ -32,21 +33,24 @@ pub const EditorPanel = struct {
         const s = cx.state(AppState);
         const left: f32 = if (s.sidebar_open) 0 else theme.inset;
         const width = self.width - theme.inset - left;
-        const below = self.height - theme.titlebar_height - theme.inset;
+        // No file open: the container takes the tab bar's row too (not under the hidden sidebar's buttons).
+        const fill = s.tabs.count == 0 and s.sidebar_open;
+        const top: f32 = if (fill) theme.inset else theme.titlebar_height;
+        const below = self.height - top - theme.inset;
         const term = terminal.slot(s).open;
         // The editor keeps at least 120pt; the terminal gets the rest it asked for.
         const term_h: f32 = if (term) std.math.clamp(s.term_height, terminal.min_height, @max(terminal.min_height, below - 120 - theme.inset)) else 0;
         const editor_h = if (term) below - term_h - theme.inset else below;
         if (term) s.term_rect = .{
             .x = (if (s.sidebar_open) theme.sidebar_width else 0) + left,
-            .y = theme.titlebar_height + editor_h + theme.inset,
+            .y = top + editor_h + theme.inset,
             .w = width,
             .h = term_h,
         };
         cx.render(ui.box(.{ .width = self.width, .height = self.height }, .{
-            TabBar{ .width = self.width },
+            ui.when(!fill, .{TabBar{ .width = self.width }}),
             ui.box(.{
-                .padding = .{ .each = .{ .top = 0, .right = theme.inset, .bottom = theme.inset, .left = left } },
+                .padding = .{ .each = .{ .top = if (fill) theme.inset else 0, .right = theme.inset, .bottom = theme.inset, .left = left } },
                 .gap = theme.inset,
             }, .{
                 Container{ .width = width, .height = editor_h },
@@ -85,8 +89,8 @@ const Container = struct {
             // Hidden under quick open: text widgets draw above floating cards.
             CodeEditor{
                 .id = id,
-                .bind = if (tab) |t| &t.source else &empty,
-                .placeholder = if (tab) |t| t.placeholder else "Select a file to open",
+                .bind = if (tab) |t| &t.source else &tabs.scratch,
+                .placeholder = if (tab) |t| t.placeholder else "Type something...",
                 .placeholder_color = theme.color.muted,
                 // Full width: the scrollbar's lane (6 + 5 × 2) is where long lines wrap,
                 // 16pt before the right edge, with the bar 5pt from it.
@@ -94,7 +98,7 @@ const Container = struct {
                 .soft_wrap = s.settings.soft_wrap,
                 .show_line_numbers = s.settings.line_numbers,
                 .height = self.height - 2 - theme.editor_top - padding,
-                .highlighter = if (tab) |t| syntax.forName(s.names[t.node]) else null,
+                .highlighter = if (tab) |t| syntax.forName(s.tabName(t)) else null,
                 .padding = 0,
                 // Room for four digits at any zoom, within gooey's gutter cap.
                 .gutter_width = @min(gooey.widgets.code_editor_state.MAX_GUTTER_WIDTH, 48 * s.settings.font_size / theme.mono_font_size),
@@ -116,12 +120,10 @@ const Container = struct {
                 .selection_color = theme.color.primary.withAlpha(0.18),
             },
             ui.when(s.find.open, .{FindBar{}}),
-        })}));
+        }), ui.when(save.unsaved(s, cx.window()), .{save.Badge{}})}));
         if (!s.picker.open) if (tabs.editor(cx.window(), id)) |ce| prepare(s, cx.window(), ce, id);
     }
 };
-
-var empty: []const u8 = "";
 
 /// Once the editor exists: vim's block cursor, a new one's text (its view
 /// follows next frame), the focus it inherits.
