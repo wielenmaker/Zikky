@@ -9,6 +9,7 @@ const row_menu = @import("row_menu.zig");
 const tabs = @import("tabs.zig");
 const picker = @import("picker.zig");
 const find = @import("find.zig");
+const palette = @import("palette.zig");
 const store = @import("store.zig");
 const vim = @import("vim.zig");
 const Settings = @import("settings.zig").Settings;
@@ -43,6 +44,8 @@ pub const AppState = struct {
     exclude_edit: []const u8 = "",
     /// Quick open (⌘O / ⌘P).
     picker: picker.Picker = .{},
+    /// The command palette (⌘⇧P).
+    palette: palette.Palette = .{},
     /// The find bar (⌘F, vim's `/`).
     find: find.Find = .{},
     /// Hidden with ⌘\ or the panel buttons; the editor then fills the window.
@@ -130,6 +133,7 @@ pub const AppState = struct {
 
     pub fn openPicker(self: *AppState, g: *gooey.Window) void {
         find.close(self, g);
+        if (self.palette.open) palette.close(self, g);
         picker.open(self, g);
     }
 
