@@ -1,4 +1,4 @@
-"""Slate file marks: geometry for each language's mark on a 16-unit grid.
+"""Zikky file marks: geometry for each language's mark on a 16-unit grid.
 
 Every mark is one path, one color, filled with the nonzero rule (what gooey's
 SVG renderer draws). Solids wind one way and knockouts the other; knockouts

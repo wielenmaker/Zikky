@@ -1,4 +1,4 @@
-//! The Appearance choice: System, Light and Dark as tiny Slate windows (like
+//! The Appearance choice: System, Light and Dark as tiny Zikky windows (like
 //! Onyx's theme tiles); System shows the light window with the dark one's
 //! right half over it.
 
@@ -86,7 +86,7 @@ const code_lines = [_][]const Run{
     &.{ .{ 3, "" }, .{ 7, "key" }, .{ 2, "" }, .{ 3, "number" } },
 };
 
-/// A tiny Slate window: traffic lights and tree rows on the window
+/// A tiny Zikky window: traffic lights and tree rows on the window
 /// background, the code in its rounded container.
 fn window(ctx: *ui.DrawContext, p: *const Palette) void {
     ctx.fillRoundedRect(0, 0, thumb_w, thumb_h, 6, p.sidebar_bg);

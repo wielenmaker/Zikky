@@ -37,7 +37,7 @@ fn onInit(cx: *Cx, s: *AppState) void {
     terminal.bindKeys(cx.window());
     app_menu.install(cx.window());
     s.applyVim(cx.window());
-    cx.window().platform_window.?.autosaveFrame("Slate");
+    cx.window().platform_window.?.autosaveFrame("Zikky");
     s.load(cx.window().io);
     if (s.tree.node_count > 0) s.remember(s.paths[0]);
     if (last) |ses| session.restore(s, cx.window(), ses);
@@ -114,7 +114,7 @@ test {
     _ = @import("find.zig");
 }
 
-/// `slate [folder]` opens `folder`; without one, the last session's folder
+/// `zikky [folder]` opens `folder`; without one, the last session's folder
 /// (if restoring is on), else the current directory, or from the app bundle
 /// the welcome screen.
 pub fn main(init: std.process.Init) !void {
@@ -128,7 +128,7 @@ pub fn main(init: std.process.Init) !void {
     if (bundled) state.root = "";
     if (args.len > 1) state.root = args[1];
     welcome.home = init.environ_map.get("HOME") orelse "";
-    if (init.environ_map.get("HOME")) |home| store.dir = try std.fs.path.join(state.arena, &.{ home, "Library/Application Support/Slate" });
+    if (init.environ_map.get("HOME")) |home| store.dir = try std.fs.path.join(state.arena, &.{ home, "Library/Application Support/Zikky" });
     state.settings = store.load(Settings, state.arena, init.io, Settings.file);
     const ses = store.load(session.Session, state.arena, init.io, session.Session.file_name);
     // Oldest first, so the newest ends up in front.
