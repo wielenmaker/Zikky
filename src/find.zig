@@ -78,6 +78,8 @@ fn start(s: *AppState, g: *gooey.Window, from_vim: bool, backward: bool) void {
     f.origin = if (ce.text_area.selection_anchor) |a| @min(a, ce.text_area.cursor_byte) else ce.text_area.cursor_byte;
     f.seen_len = std.math.maxInt(usize);
     f.focus_query = true;
+    // The bar takes the focus, not the editor (a command palette just handed it back).
+    s.tabs.focus = false;
     g.requestRender();
 }
 
