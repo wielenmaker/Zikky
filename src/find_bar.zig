@@ -42,7 +42,7 @@ pub const FindBar = struct {
         }, .{
             ui.input(find.query_id, .{
                 .bind = &f.query,
-                .placeholder = if (f.vim) (if (f.backward) "?" else "/") else "Find",
+                .placeholder = "Find",
                 .width = query_width,
                 .height = 24,
                 .padding = 2,
