@@ -1,4 +1,4 @@
-//! Files embedded in the Slate binary.
+//! Files embedded in the Zikky binary.
 
 /// Paper Mono Regular, the default editor font (SIL OFL 1.1, see fonts/OFL.txt).
 pub const paper_mono = @embedFile("fonts/PaperMono-Regular.ttf");

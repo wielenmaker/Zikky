@@ -1,4 +1,4 @@
-"""Builds file-marks.pdf: the Slate file marks brochure, drawn as vector PDF.
+"""Builds file-marks.pdf: the Zikky file marks brochure, drawn as vector PDF.
 
 Usage: python3 design/brochure.py [out.pdf] [page-preview-dir]
 """
@@ -130,7 +130,7 @@ def text_w(s, size):
 
 def cover(all_marks):
     p = Page()
-    p.text("Slate File Marks", 48, 82, 34, bold=True)
+    p.text("Zikky File Marks", 48, 82, 34, bold=True)
     p.text("A crafted logo set for popular files  ·  draft 1  ·  28 October 2026", 48, 106, 12, MUTED)
     p.rrect(48, 136, 230, 230, 22, CARD)
     zig = all_marks[0]
@@ -144,7 +144,7 @@ def cover(all_marks):
         ("16-unit grid.", "Every mark is drawn for the 14 pt file tree first and scales up cleanly; "
                           "strokes are about 1.5 units, so they stay over a pixel wide."),
         ("One path, one colour.", "Each mark is a single SVG path filled with the nonzero rule, which is "
-                                  "exactly what gooey's renderer draws, so the paths go into Slate unchanged."),
+                                  "exactly what gooey's renderer draws, so the paths go into Zikky unchanged."),
         ("Knockouts, not outlines.", "Letters and details are cut out of a solid shape. They stay legible "
                                      "when small and turn into white-on-colour for the tab logo."),
         ("Recognisable, not copied.", "Each mark keeps the cue people already know (Rust's cog, Python's "
@@ -206,14 +206,14 @@ def in_context(all_marks):
     p = Page()
     by = {n: (c, f) for n, c, e, f in all_marks}
     p.text("In context", 40, 52, 20, bold=True)
-    p.text("Actual size, in Slate's light theme: the tree, the tab bar and quick open.", 40, 72, 11, MUTED)
+    p.text("Actual size, in Zikky's light theme: the tree, the tab bar and quick open.", 40, 72, 11, MUTED)
 
     wx, wy, ww, wh = 40, 92, 500, 470
     p.rrect(wx, wy, ww, wh, 12, SIDEBAR, stroke=BORDER)
     for i, c in enumerate((0xFF5F57, 0xFEBC2E, 0x28C840)):
         p.rrect(wx + 14 + i * 20, wy + 14, 12, 12, 6, c)
     tree = [
-        (0, "folder", "slate"), (1, "Zig", "build.zig"), (1, "Zig", "build.zig.zon"), (1, "Markdown", "README.md"),
+        (0, "folder", "zikky"), (1, "Zig", "build.zig"), (1, "Zig", "build.zig.zon"), (1, "Markdown", "README.md"),
         (1, "Git", ".gitignore"), (1, "Docker", "Dockerfile"), (1, "folder", "src"), (2, "Zig", "main.zig"),
         (2, "Zig", "editor.zig"), (1, "folder", "web"), (2, "React", "App.tsx"), (2, "TypeScript", "api.ts"),
         (2, "CSS", "style.css"), (2, "HTML", "index.html"), (2, "JSON", "package.json"), (1, "folder", "tools"),
@@ -294,7 +294,7 @@ def pdf(pages):
                          f"/Resources << /Font << /F1 {f1} 0 R /F2 {f2} 0 R >> >> /Contents {c} 0 R >>").encode()))
     add((f"<< /Type /Pages /Kids [{' '.join(f'{k} 0 R' for k in kids)}] /Count {len(kids)} >>").encode())
     cat = add(f"<< /Type /Catalog /Pages {pages_id} 0 R >>".encode())
-    info = add(b"<< /Title (Slate File Marks) /Author (Slate) >>")
+    info = add(b"<< /Title (Zikky File Marks) /Author (Zikky) >>")
     out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
     offs = []
     for i, o in enumerate(objs):

@@ -28,7 +28,7 @@ pub const Pty = struct {
         const argv = [_:null]?[*:0]const u8{argv0};
 
         var env: std.ArrayList(?[*:0]const u8) = .empty;
-        const set = [_][:0]const u8{ "TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=Slate" };
+        const set = [_][:0]const u8{ "TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=Zikky" };
         var i: usize = 0;
         while (c.environ[i]) |entry| : (i += 1) {
             const e = std.mem.span(entry);

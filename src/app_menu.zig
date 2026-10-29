@@ -15,16 +15,16 @@ const shift_cmd = gooey.input.Modifiers{ .cmd = true, .shift = true };
 const sep = Item{};
 
 const menus = [_]menu.Menu{
-    .{ .title = "Slate", .items = &.{
-        .{ .title = "About Slate", .action = "orderFrontStandardAboutPanel:" },
+    .{ .title = "Zikky", .items = &.{
+        .{ .title = "About Zikky", .action = "orderFrontStandardAboutPanel:" },
         sep,
         .{ .title = "Settings…", .key = ",", .code = .comma },
         sep,
-        .{ .title = "Hide Slate", .key = "h", .action = "hide:" },
+        .{ .title = "Hide Zikky", .key = "h", .action = "hide:" },
         .{ .title = "Hide Others", .key = "h", .mods = .{ .cmd = true, .alt = true }, .action = "hideOtherApplications:" },
         .{ .title = "Show All", .action = "unhideAllApplications:" },
         sep,
-        .{ .title = "Quit Slate", .key = "q", .action = "terminate:" },
+        .{ .title = "Quit Zikky", .key = "q", .action = "terminate:" },
     } },
     .{ .title = "File", .items = &.{
         .{ .title = "Quick Open…", .key = "o", .code = .o },

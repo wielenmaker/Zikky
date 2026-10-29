@@ -2,7 +2,7 @@
 
 `vendor/gooey` is [gooey](https://github.com/duanebester/gooey) at `3f69825` plus the changes
 below; `vendor/gooey.patch` is the full diff. They are grouped as upstream pull requests would
-be: each group stands on its own, lists the files it touches, and says why Slate needed it.
+be: each group stands on its own, lists the files it touches, and says why Zikky needed it.
 Some files carry changes from more than one group (marked *shared*); split those hunks by hand.
 
 Regenerate the patch (upstream clone in `../references-cache/gooey`):

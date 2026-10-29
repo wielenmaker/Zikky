@@ -1,4 +1,4 @@
-"""Builds Slate's app icon (assets/Slate.icns) and the welcome screen's logo
+"""Builds Zikky's app icon (assets/Zikky.icns) and the welcome screen's logo
 (assets/logo.png, the rounded square on transparency) from logo.png.
 
 logo.png is the rounded square on an off-white page. macOS 26 puts a legacy
@@ -49,13 +49,13 @@ full = art * alpha + fill * (1 - alpha)
 canvas = Image.fromarray(full.round().astype(np.uint8)).resize((1024, 1024), Image.LANCZOS)
 
 with tempfile.TemporaryDirectory() as tmp:
-    iconset = os.path.join(tmp, "Slate.iconset")
+    iconset = os.path.join(tmp, "Zikky.iconset")
     os.mkdir(iconset)
     for pt in (16, 32, 128, 256, 512):
         for scale in (1, 2):
             name = f"icon_{pt}x{pt}{'@2x' if scale == 2 else ''}.png"
             canvas.resize((pt * scale,) * 2, Image.LANCZOS).save(os.path.join(iconset, name))
-    out = os.path.join(ROOT, "assets", "Slate.icns")
+    out = os.path.join(ROOT, "assets", "Zikky.icns")
     subprocess.run(["iconutil", "-c", "icns", iconset, "-o", out], check=True)
 canvas.save(os.path.join(ROOT, "design", "icon.png"))
-print("wrote assets/Slate.icns, assets/logo.png, design/icon.png", file=sys.stderr)
+print("wrote assets/Zikky.icns, assets/logo.png, design/icon.png", file=sys.stderr)

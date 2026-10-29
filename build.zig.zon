@@ -1,5 +1,5 @@
 .{
-    .name = .slate,
+    .name = .zikky,
     .version = "0.0.1",
     .dependencies = .{
         .gooey = .{ .path = "vendor/gooey" },
@@ -10,5 +10,5 @@
     },
     .minimum_zig_version = "0.17.0",
     .paths = .{""},
-    .fingerprint = 0x363ead8bd5141ed8,
+    .fingerprint = 0xd83ce8cf38d6defd,
 }

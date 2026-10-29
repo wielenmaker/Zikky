@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
     const ghostty = b.dependency("ghostty", .{ .target = target, .optimize = optimize });
 
     const exe = b.addExecutable(.{
-        .name = "slate",
+        .name = "zikky",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -25,8 +25,8 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
-    b.step("run", "Run Slate").dependOn(&run.step);
+    b.step("run", "Run Zikky").dependOn(&run.step);
 
     const tests = b.addRunArtifact(b.addTest(.{ .root_module = exe.root_module }));
-    b.step("test", "Run Slate's tests").dependOn(&tests.step);
+    b.step("test", "Run Zikky's tests").dependOn(&tests.step);
 }
