@@ -106,6 +106,7 @@ For components gooey lacks, use [gpui-kit](https://github.com/longbridge/gpui-ki
   then the command palette, the terminal, the find bar, and vim.
 - ⌘\ or the panel buttons hide/show the sidebar; hidden, the container fills the window and
   its top row holds the show button beside the traffic lights (like Onyx).
+  In full screen (no traffic lights) the sidebar's hide button and the show button move to the edge (`src/titlebar.zig`).
 - Editing: ⌘⌫ / ⌥⌫ delete to line start / previous word (⌘⌦ / ⌥⌦ forward); ⌥←/→ stop at
   punctuation, like macOS. Long lines soft-wrap (at the last space, 16pt before the container's
   right edge); only a line's first row gets a line number.

@@ -5,6 +5,7 @@
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
+const titlebar = @import("titlebar.zig");
 const AppState = @import("state.zig").AppState;
 const file_kind = @import("file_kind.zig");
 const IconButton = @import("icon_button.zig").IconButton;
@@ -30,17 +31,18 @@ pub const TabBar = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
-        // Hidden sidebar: the show button takes the hide button's place (x = 84).
+        // Hidden sidebar: the show button takes the hide button's place.
+        const left = titlebar.left(cx.window());
         cx.render(ui.box(.{
             .fill_width = true,
             .height = theme.titlebar_height,
             .direction = .row,
             .gap = gap,
             .alignment = .{ .cross = .center },
-            .padding = .{ .each = .{ .top = 0, .right = 0, .bottom = 0, .left = if (s.sidebar_open) 0 else 84 } },
+            .padding = .{ .each = .{ .top = 0, .right = 0, .bottom = 0, .left = if (s.sidebar_open) 0 else left } },
         }, .{
             ui.when(!s.sidebar_open, .{IconButton{ .icon = Lucide.panel_left_open, .on_click = cx.command(AppState.toggleSidebar) }}),
-            Tabs{ .width = self.width - if (s.sidebar_open) 0 else 84 + 24 + gap },
+            Tabs{ .width = self.width - if (s.sidebar_open) 0 else left + 24 + gap },
         }));
     }
 };
