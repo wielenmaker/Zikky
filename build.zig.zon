@@ -1,0 +1,14 @@
+.{
+    .name = .slate,
+    .version = "0.0.1",
+    .dependencies = .{
+        .gooey = .{ .path = "vendor/gooey" },
+        .ghostty = .{
+            .url = "https://github.com/ghostty-org/ghostty/archive/b2c78c9bd9bc88a16d9c3769b0fb17ddde1b78b1.tar.gz",
+            .hash = "ghostty-1.4.1-dev-5UdBC2n3hwUv6wB8nxuvpl9M8uussV2WYbTbpRe2gIbC",
+        },
+    },
+    .minimum_zig_version = "0.17.0",
+    .paths = .{""},
+    .fingerprint = 0x363ead8bd5141ed8,
+}
