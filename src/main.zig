@@ -13,6 +13,8 @@ const settings_window = @import("settings_window.zig");
 const PickerView = @import("picker_view.zig").PickerView;
 const appearance = @import("appearance.zig");
 const find = @import("find.zig");
+const palette = @import("palette.zig");
+const PaletteView = @import("palette_view.zig").PaletteView;
 const terminal = @import("terminal.zig");
 const welcome = @import("welcome.zig");
 const assets = @import("assets");
@@ -34,6 +36,7 @@ fn onInit(cx: *Cx, s: *AppState) void {
     editor_font.bindKeys(cx.window());
     sidebar.bindKeys(cx.window());
     find.bindKeys(cx.window());
+    palette.bindKeys(cx.window());
     terminal.bindKeys(cx.window());
     app_menu.install(cx.window());
     s.applyVim(cx.window());
@@ -80,12 +83,14 @@ fn render(cx: *Cx) void {
         ui.onActionHandler(app_menu.OpenSettings, cx.command(settings_window.open)),
         ui.onActionHandler(app_menu.QuickOpen, cx.command(AppState.openPicker)),
         ui.onActionHandler(find.Open, cx.command(find.open)),
+        ui.onActionHandler(palette.Open, cx.command(palette.toggle)),
         ui.onActionHandler(find.Next, cx.command(find.next)),
         ui.onActionHandler(find.Prev, cx.command(find.prev)),
         ui.onActionHandler(terminal.Toggle, cx.command(AppState.toggleTerminal)),
         ui.when(sidebar_width > 0, .{sidebar.Sidebar{}}),
         EditorPanel{ .width = size.width - sidebar_width, .height = size.height },
         ui.when(cx.state(AppState).picker.open, .{PickerView{ .width = size.width, .height = size.height }}),
+        ui.when(cx.state(AppState).palette.open, .{PaletteView{ .window_width = size.width, .window_height = size.height }}),
     }));
 }
 
@@ -112,6 +117,7 @@ test {
     _ = @import("settings.zig");
     _ = @import("fuzzy.zig");
     _ = @import("find.zig");
+    _ = @import("palette.zig");
 }
 
 /// `zikky [folder]` opens `folder`; without one, the last session's folder

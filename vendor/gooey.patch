@@ -1213,7 +1213,7 @@ index c747a60..5961915 100644
      if (ce_widget.text_area.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
  }
 diff --git a/src/runtime/input.zig b/src/runtime/input.zig
-index 05afed2..f56ac8b 100644
+index 05afed2..6f21496 100644
 --- a/src/runtime/input.zig
 +++ b/src/runtime/input.zig
 @@ -106,6 +106,17 @@ pub fn handleInputCx(
@@ -1270,7 +1270,48 @@ index 05afed2..f56ac8b 100644
              cx.notify();
              return true;
          }
-@@ -884,10 +890,13 @@ pub fn syncCodeEditorBoundVariablesCx(cx: *Cx) void {
+@@ -374,15 +380,16 @@ fn handleMouseDownEvent(
+     // 1. Check scroll containers for scrollbar clicks (highest priority)
+     if (handleScrollbarClick(cx, window, builder, x, y)) return true;
+ 
+-    // 2. Check if click is in a TextArea
+-    if (handleTextAreaClick(cx, window, builder, x, y)) return true;
+-
+-    // 3. Check if click is in a CodeEditor
+-    if (handleCodeEditorClick(cx, window, builder, down_ev)) return true;
+-
+-    // 4. Compute hit target once for focus clearing, click-outside, and dispatch.
++    // Compute hit target once for focus clearing, click-outside, and dispatch.
+     const hit_target = window.rendered_frame.dispatch.hitTest(x, y);
+ 
++    // 2-3. A TextArea or CodeEditor takes clicks in its bounds, unless a raised
++    // (floating) element is over the point: a palette above the editor gets them.
++    if (!inRaised(window, hit_target)) {
++        if (handleTextAreaClick(cx, window, builder, x, y)) return true;
++        if (handleCodeEditorClick(cx, window, builder, down_ev)) return true;
++    }
++
+     // Clicking non-focusable content ends text editing. Focusable targets perform
+     // their own transition during dispatch, avoiding a blur/refocus cycle when
+     // clicking an already-focused control or one of its rendered children.
+@@ -419,6 +426,16 @@ fn handleMouseDownEvent(
+     return false;
+ }
+ 
++/// Whether the hit node or any ancestor is raised (a floating element, z_index > 0).
++fn inRaised(window: *const Window, target: ?DispatchNodeId) bool {
++    var id = target orelse return false;
++    while (window.rendered_frame.dispatch.getNodeConst(id)) |node| {
++        if (node.z_index > 0) return true;
++        id = node.parent;
++    }
++    return false;
++}
++
+ /// Return whether the hit node or any ancestor participates in focus.
+ fn hitPathHasFocusTarget(window: *const Window, hit_target: ?DispatchNodeId) bool {
+     const target = hit_target orelse return false;
+@@ -884,10 +901,13 @@ pub fn syncCodeEditorBoundVariablesCx(cx: *Cx) void {
  
  /// Check if a key event should be forwarded to text widgets
  pub fn isControlKey(key: input_mod.KeyCode, mods: input_mod.Modifiers) bool {

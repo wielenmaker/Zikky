@@ -380,14 +380,15 @@ fn handleMouseDownEvent(
     // 1. Check scroll containers for scrollbar clicks (highest priority)
     if (handleScrollbarClick(cx, window, builder, x, y)) return true;
 
-    // 2. Check if click is in a TextArea
-    if (handleTextAreaClick(cx, window, builder, x, y)) return true;
-
-    // 3. Check if click is in a CodeEditor
-    if (handleCodeEditorClick(cx, window, builder, down_ev)) return true;
-
-    // 4. Compute hit target once for focus clearing, click-outside, and dispatch.
+    // Compute hit target once for focus clearing, click-outside, and dispatch.
     const hit_target = window.rendered_frame.dispatch.hitTest(x, y);
+
+    // 2-3. A TextArea or CodeEditor takes clicks in its bounds, unless a raised
+    // (floating) element is over the point: a palette above the editor gets them.
+    if (!inRaised(window, hit_target)) {
+        if (handleTextAreaClick(cx, window, builder, x, y)) return true;
+        if (handleCodeEditorClick(cx, window, builder, down_ev)) return true;
+    }
 
     // Clicking non-focusable content ends text editing. Focusable targets perform
     // their own transition during dispatch, avoiding a blur/refocus cycle when
@@ -422,6 +423,16 @@ fn handleMouseDownEvent(
         cx.notify();
     }
 
+    return false;
+}
+
+/// Whether the hit node or any ancestor is raised (a floating element, z_index > 0).
+fn inRaised(window: *const Window, target: ?DispatchNodeId) bool {
+    var id = target orelse return false;
+    while (window.rendered_frame.dispatch.getNodeConst(id)) |node| {
+        if (node.z_index > 0) return true;
+        id = node.parent;
+    }
     return false;
 }
 

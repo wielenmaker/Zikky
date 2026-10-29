@@ -48,6 +48,7 @@ const menus = [_]menu.Menu{
     .{ .title = "View", .items = &.{
         .{ .title = "Toggle Sidebar", .key = "\\", .code = .backslash },
         .{ .title = "Toggle Terminal", .key = "j", .code = .j },
+        .{ .title = "Command Palette…", .key = "p", .mods = shift_cmd, .code = .p },
         sep,
         .{ .title = "Zoom In", .key = "=", .code = .equal },
         .{ .title = "Zoom Out", .key = "-", .code = .minus },
