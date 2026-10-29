@@ -1,0 +1,906 @@
+//! Layout Engine Benchmarks
+//!
+//! Benchmark suite modeled after PanGui's layout benchmarks.
+//! Tests various layout scenarios to measure performance characteristics.
+//!
+//! Run as executable: zig build bench
+//! Quick tests only:  zig build test (validates node counts, doesn't time)
+//!
+//! Current MAX_ELEMENTS_PER_FRAME = 16384. Only benchmarks that fit
+//! within this limit are included. For comparison with PanGui's full suite
+//! (which tests up to 100k+ nodes), consider increasing this limit.
+
+const std = @import("std");
+const gooey = @import("gooey");
+const bench = @import("bench");
+
+/// Minimal `Instant.now()` / `.since()` shim over `std.Io.Clock.awake`, kept
+/// local to the benchmark module so every sample site reads as a two-line
+/// capture-then-diff instead of threading `io` through every benchmark
+/// helper signature. `.awake` is the monotonic clock — deltas here can
+/// never go negative regardless of NTP or sysadmin clock edits.
+///
+/// `std.Io` is a pair of pointers into a process-lifetime vtable, so the
+/// per-call `global_single_threaded.io()` lookup compiles down to a pair
+/// of constant pointer loads — effectively free.
+const time = struct {
+    inline fn benchIo() std.Io {
+        return std.Io.Threaded.global_single_threaded.io();
+    }
+
+    const Instant = struct {
+        ts: std.Io.Timestamp,
+
+        inline fn now() Instant {
+            return .{ .ts = std.Io.Timestamp.now(benchIo(), .awake) };
+        }
+
+        inline fn since(self: Instant, earlier: Instant) u64 {
+            const ns: i96 = earlier.ts.durationTo(self.ts).toNanoseconds();
+            std.debug.assert(ns >= 0);
+            return @intCast(ns);
+        }
+    };
+};
+const layout = gooey.layout;
+
+const LayoutEngine = layout.LayoutEngine;
+const Sizing = layout.Sizing;
+const SizingAxis = layout.SizingAxis;
+const Padding = layout.Padding;
+
+// =============================================================================
+// Benchmark Configuration
+// =============================================================================
+
+// Adaptive iterations based on node count (tree building is expensive for large tests)
+fn getWarmupIterations(node_count: u32) u32 {
+    if (node_count >= 10000) return 2;
+    if (node_count >= 5000) return 3;
+    return 5;
+}
+
+fn getMinSampleIterations(node_count: u32) u32 {
+    if (node_count >= 10000) return 5;
+    if (node_count >= 5000) return 8;
+    return 10;
+}
+
+const MIN_SAMPLE_TIME_NS: u64 = 50 * std.time.ns_per_ms; // 50ms for fast dev iteration
+
+// =============================================================================
+// Benchmark Results
+// =============================================================================
+
+const BenchmarkResult = struct {
+    name: []const u8,
+    node_count: u32,
+    total_time_ns: u64,
+    iterations: u32,
+    min_time_ns: u64,
+
+    pub fn avgTimeMs(self: BenchmarkResult) f64 {
+        const avg_ns: f64 = @as(f64, @floatFromInt(self.total_time_ns)) /
+            @as(f64, @floatFromInt(self.iterations));
+        return avg_ns / std.time.ns_per_ms;
+    }
+
+    pub fn timePerNodeNs(self: BenchmarkResult) f64 {
+        const avg_ns = @as(f64, @floatFromInt(self.total_time_ns)) /
+            @as(f64, @floatFromInt(self.iterations));
+        return avg_ns / @as(f64, @floatFromInt(self.node_count));
+    }
+
+    /// Minimum observed per-node nanoseconds — the best-of-N estimator, least
+    /// perturbed by runner noise. Mirrors `timePerOpNs` on the min sample.
+    pub fn minPerOpNs(self: BenchmarkResult) f64 {
+        std.debug.assert(self.iterations > 0);
+        std.debug.assert(self.node_count > 0);
+        return @as(f64, @floatFromInt(self.min_time_ns)) / @as(f64, @floatFromInt(self.node_count));
+    }
+
+    pub fn print(self: BenchmarkResult) void {
+        std.debug.print(
+            "| {s:<40} | {d:>8} | {d:>10.4} ms | {d:>8.2} ns/node |\n",
+            .{ self.name, self.node_count, self.avgTimeMs(), self.timePerNodeNs() },
+        );
+    }
+};
+
+// =============================================================================
+// Benchmark Runner (for executable mode)
+// =============================================================================
+
+fn runBenchmark(
+    allocator: std.mem.Allocator,
+    comptime name: []const u8,
+    comptime buildFn: fn (*LayoutEngine) anyerror!u32,
+) BenchmarkResult {
+    var engine = LayoutEngine.init(allocator);
+    defer engine.deinit();
+
+    // First pass to get node count for adaptive iterations
+    engine.beginFrame(1000, 1000);
+    const node_count = buildFn(&engine) catch unreachable;
+    _ = engine.endFrame() catch unreachable;
+
+    const warmup_iters = getWarmupIterations(node_count);
+    const min_sample_iters = getMinSampleIterations(node_count);
+
+    // Warmup (adaptive based on node count)
+    var warmup_count: u32 = 0;
+    while (warmup_count < warmup_iters) : (warmup_count += 1) {
+        engine.beginFrame(1000, 1000);
+        _ = buildFn(&engine) catch unreachable;
+        _ = engine.endFrame() catch unreachable;
+    }
+
+    // Sample - measure only layout computation (endFrame), not tree building
+    var sampler: bench.Sampler = .{};
+
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_sample_iters) {
+        engine.beginFrame(1000, 1000);
+        _ = buildFn(&engine) catch unreachable;
+
+        const start = time.Instant.now();
+        _ = engine.endFrame() catch unreachable;
+        const end = time.Instant.now();
+
+        sampler.record(end.since(start));
+    }
+
+    return .{
+        .name = name,
+        .node_count = node_count,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
+    };
+}
+
+/// Full-frame benchmark: times tree construction (beginFrame + buildFn) AND layout (endFrame)
+/// together. This captures the cost of element creation, sibling linking, and ID tracking
+/// in addition to layout computation.
+fn runFullFrameBenchmark(
+    allocator: std.mem.Allocator,
+    comptime name: []const u8,
+    comptime buildFn: fn (*LayoutEngine) anyerror!u32,
+) BenchmarkResult {
+    var engine = LayoutEngine.init(allocator);
+    defer engine.deinit();
+
+    // First pass to get node count for adaptive iterations
+    engine.beginFrame(1000, 1000);
+    const node_count = buildFn(&engine) catch unreachable;
+    _ = engine.endFrame() catch unreachable;
+
+    const warmup_iters = getWarmupIterations(node_count);
+    const min_sample_iters = getMinSampleIterations(node_count);
+
+    // Warmup
+    var warmup_count: u32 = 0;
+    while (warmup_count < warmup_iters) : (warmup_count += 1) {
+        engine.beginFrame(1000, 1000);
+        _ = buildFn(&engine) catch unreachable;
+        _ = engine.endFrame() catch unreachable;
+    }
+
+    // Sample - measure entire frame: beginFrame + tree build + endFrame
+    var sampler: bench.Sampler = .{};
+
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_sample_iters) {
+        const start = time.Instant.now();
+        engine.beginFrame(1000, 1000);
+        _ = buildFn(&engine) catch unreachable;
+        _ = engine.endFrame() catch unreachable;
+        const end = time.Instant.now();
+
+        sampler.record(end.since(start));
+    }
+
+    return .{
+        .name = name,
+        .node_count = node_count,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
+    };
+}
+
+// =============================================================================
+// Quick Validation (for test mode - just check node counts)
+// =============================================================================
+
+fn validateBenchmark(
+    comptime buildFn: fn (*LayoutEngine) anyerror!u32,
+    expected_count: u32,
+) !void {
+    var engine = LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(1000, 1000);
+    const count = try buildFn(&engine);
+    _ = try engine.endFrame();
+
+    try std.testing.expectEqual(expected_count, count);
+}
+
+// =============================================================================
+// Benchmark: wide_no_wrap_simple_few (1,001 nodes)
+// =============================================================================
+// From PanGui:
+// Width(Pixels(100)).Height(Pixels(100)).Horizontal()
+// {
+//     Repeat(1000) { Width(Pixels(10)).Height(Pixels(10)) {} }
+// }
+
+fn buildWideNoWrapSimpleFew(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fixed(100) },
+            .layout_direction = .left_to_right,
+        },
+    });
+    count += 1;
+
+    for (0..1000) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.fixed(10), .height = SizingAxis.fixed(10) },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: wide_no_wrap_simple_few" {
+    try validateBenchmark(buildWideNoWrapSimpleFew, 1001);
+}
+
+// =============================================================================
+// Benchmark: expand_with_max_constraint (3,001 nodes)
+// =============================================================================
+// From PanGui:
+// Width(Pixels(100)).Height(Fit).Horizontal()
+// {
+//     Repeat(1000) {
+//         Width(Pixels(100)).Height(Fit).Horizontal() {
+//             Width(Expand(1)).Height(Pixels(10)) {}
+//             Width(Expand(1)).Height(Pixels(10)).MaxWidth(Pixels(40)) {}
+//         }
+//     }
+// }
+
+fn buildExpandWithMaxConstraint(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fit() },
+            .layout_direction = .left_to_right,
+        },
+    });
+    count += 1;
+
+    for (0..1000) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fit() },
+                .layout_direction = .left_to_right,
+            },
+        });
+        count += 1;
+
+        // First child: grow without constraint
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(10) },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+
+        // Second child: grow with max constraint
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.growMax(40), .height = SizingAxis.fixed(10) },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: expand_with_max_constraint" {
+    try validateBenchmark(buildExpandWithMaxConstraint, 3001);
+}
+
+// =============================================================================
+// Benchmark: expand_with_min_constraint (3,001 nodes)
+// =============================================================================
+// From PanGui:
+// Width(Pixels(100)).Height(Fit).Horizontal()
+// {
+//     Repeat(1000) {
+//         Width(Pixels(100)).Height(Fit).Horizontal() {
+//             Width(Expand(1)).Height(Pixels(10)) {}
+//             Width(Expand(1)).Height(Pixels(10)).MinWidth(Pixels(60)) {}
+//         }
+//     }
+// }
+
+fn buildExpandWithMinConstraint(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fit() },
+            .layout_direction = .left_to_right,
+        },
+    });
+    count += 1;
+
+    for (0..1000) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fit() },
+                .layout_direction = .left_to_right,
+            },
+        });
+        count += 1;
+
+        // First child: grow without constraint
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(10) },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+
+        // Second child: grow with min constraint
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.growMin(60), .height = SizingAxis.fixed(10) },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: expand_with_min_constraint" {
+    try validateBenchmark(buildExpandWithMinConstraint, 3001);
+}
+
+// =============================================================================
+// Benchmark: nested_vertical_stack (10,001 nodes)
+// =============================================================================
+// From PanGui:
+// Width(Pixels(200)).Height(Fit).Vertical().Padding(10).Gap(5)
+// {
+//     Repeat(10000) { Width(Expand).Height(Pixels(1)) {} }
+// }
+
+fn buildNestedVerticalStack(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(200), .height = SizingAxis.fit() },
+            .layout_direction = .top_to_bottom,
+            .padding = Padding.all(10),
+            .child_gap = 5,
+        },
+    });
+    count += 1;
+
+    for (0..10000) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(1) },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: nested_vertical_stack" {
+    try validateBenchmark(buildNestedVerticalStack, 10001);
+}
+
+// =============================================================================
+// Benchmark: flex_expand_equal_weights (15,001 nodes)
+// =============================================================================
+// From PanGui:
+// Width(Pixels(10000)).Height(Pixels(100)).Horizontal()
+// {
+//     Repeat(15000) { Width(Expand(1)).Height(Expand) {} }
+// }
+
+fn buildFlexExpandEqualWeights(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(10000), .height = SizingAxis.fixed(100) },
+            .layout_direction = .left_to_right,
+        },
+    });
+    count += 1;
+
+    for (0..15000) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.grow() },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: flex_expand_equal_weights" {
+    try validateBenchmark(buildFlexExpandEqualWeights, 15001);
+}
+
+// =============================================================================
+// Benchmark: flex_expand_weights (15,001 nodes)
+// =============================================================================
+// From PanGui:
+// Width(Pixels(10000)).Height(Pixels(100)).Horizontal()
+// {
+//     Repeat(5000) {
+//         Width(100).Height(100).Horizontal() {
+//             Width(Expand(1)).Height(Expand) {}
+//             Width(Expand(2)).Height(Expand) {}
+//         }
+//     }
+// }
+// Note: Gooey doesn't support weighted grow yet, so both children use grow()
+
+fn buildFlexExpandWeights(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(10000), .height = SizingAxis.fixed(100) },
+            .layout_direction = .left_to_right,
+        },
+    });
+    count += 1;
+
+    for (0..5000) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fixed(100) },
+                .layout_direction = .left_to_right,
+            },
+        });
+        count += 1;
+
+        // First child: Expand(1)
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.grow() },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+
+        // Second child: Expand(2) - using grow() since we don't support weights
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.grow() },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: flex_expand_weights" {
+    try validateBenchmark(buildFlexExpandWeights, 15001);
+}
+
+// =============================================================================
+// Benchmark: percentage_and_ratio (10,001 nodes)
+// =============================================================================
+// From PanGui:
+// Width(Pixels(1000)).Height(Pixels(1000)).Vertical()
+// {
+//     Repeat(10000) { Width(Percentage(0.5)).Height(Ratio(0.5)) {} }
+// }
+
+fn buildPercentageAndRatio(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(1000), .height = SizingAxis.fixed(1000) },
+            .layout_direction = .top_to_bottom,
+        },
+    });
+    count += 1;
+
+    for (0..10000) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.percent(0.5), .height = SizingAxis.fit() },
+                .aspect_ratio = 0.5, // height = width * 0.5
+            },
+        });
+        count += 1;
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: percentage_and_ratio" {
+    try validateBenchmark(buildPercentageAndRatio, 10001);
+}
+
+// =============================================================================
+// Benchmark: deep_nesting (1,001 nodes)
+// =============================================================================
+// Tests stack depth handling with deeply nested single-child containers
+
+fn buildDeepNesting(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+    const depth: u32 = 50; // Stay within MAX_OPEN_DEPTH (64)
+
+    // Create nested containers
+    for (0..depth) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fit() },
+                .layout_direction = .top_to_bottom,
+                .padding = Padding.all(5),
+            },
+        });
+        count += 1;
+    }
+
+    // Add leaf children at the deepest level
+    for (0..951) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(10) },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+    }
+
+    // Close all containers
+    for (0..depth) |_| {
+        engine.closeElement();
+    }
+
+    return count;
+}
+
+test "validate: deep_nesting" {
+    try validateBenchmark(buildDeepNesting, 1001);
+}
+
+// =============================================================================
+// Benchmark: mixed_layout (5,051 nodes)
+// =============================================================================
+// Grid-like layout with mixed horizontal and vertical containers
+
+fn buildMixedLayout(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(800), .height = SizingAxis.fixed(600) },
+            .layout_direction = .top_to_bottom,
+            .padding = Padding.all(10),
+            .child_gap = 10,
+        },
+    });
+    count += 1;
+
+    // 50 rows
+    for (0..50) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.grow() },
+                .layout_direction = .left_to_right,
+                .child_gap = 5,
+            },
+        });
+        count += 1;
+
+        // 100 cells per row
+        for (0..100) |_| {
+            try engine.openElement(.{
+                .layout = .{
+                    .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.grow() },
+                },
+            });
+            count += 1;
+            engine.closeElement();
+        }
+
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: mixed_layout" {
+    try validateBenchmark(buildMixedLayout, 5051);
+}
+
+// =============================================================================
+// Benchmark: shrink_overflow (2,001 nodes)
+// =============================================================================
+// Tests shrink behavior when children overflow parent
+
+fn buildShrinkOverflow(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    // Small container that will force shrinking
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fixed(100) },
+            .layout_direction = .left_to_right,
+        },
+    });
+    count += 1;
+
+    // 2000 children that want 50px each but can shrink
+    for (0..2000) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.fitMax(50), .height = SizingAxis.fixed(10) },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: shrink_overflow" {
+    try validateBenchmark(buildShrinkOverflow, 2001);
+}
+
+// =============================================================================
+// Benchmark: space_distribution (1,001 nodes)
+// =============================================================================
+// Tests space_between distribution
+
+fn buildSpaceDistribution(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(1000), .height = SizingAxis.fixed(500) },
+            .layout_direction = .top_to_bottom,
+            .main_axis_distribution = .space_between,
+        },
+    });
+    count += 1;
+
+    for (0..1000) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(10) },
+            },
+        });
+        count += 1;
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: space_distribution" {
+    try validateBenchmark(buildSpaceDistribution, 1001);
+}
+
+// =============================================================================
+// Benchmark: percentage_sizing (1,001 nodes)
+// =============================================================================
+// Tests percentage-based sizing with aspect ratio
+
+fn buildPercentageSizing(engine: *LayoutEngine) !u32 {
+    var count: u32 = 0;
+
+    try engine.openElement(.{
+        .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(1000), .height = SizingAxis.fixed(1000) },
+            .layout_direction = .top_to_bottom,
+        },
+    });
+    count += 1;
+
+    for (0..1000) |_| {
+        try engine.openElement(.{
+            .layout = .{
+                .sizing = .{ .width = SizingAxis.percent(0.5), .height = SizingAxis.fit() },
+                .aspect_ratio = 0.5, // height = width * 0.5
+            },
+        });
+        count += 1;
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return count;
+}
+
+test "validate: percentage_sizing" {
+    try validateBenchmark(buildPercentageSizing, 1001);
+}
+
+// =============================================================================
+// Benchmark: nested_floating_overlays (385 nodes, 256 floating)
+// =============================================================================
+// Models 128 open modals, each with a nested dropdown and later modal content.
+// This saturates MAX_FLOATING_ROOTS and exercises z-index composition on
+// two-thirds of all elements without overflowing the fixed floating pool.
+
+fn buildNestedFloatingOverlays(engine: *LayoutEngine) !u32 {
+    const group_count: u32 = 128;
+    comptime {
+        std.debug.assert(group_count > 0);
+        std.debug.assert(group_count * 2 == layout.engine.MAX_FLOATING_ROOTS);
+    }
+
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(1000, 1000) },
+    });
+
+    for (0..group_count) |_| {
+        try engine.openElement(.{
+            .layout = .{ .sizing = Sizing.fixed(400, 300) },
+            .floating = .{ .z_index = 1000, .attach_to_parent = false },
+        });
+        try engine.openElement(.{
+            .layout = .{ .sizing = Sizing.fixed(200, 100) },
+            .floating = .{ .z_index = 100 },
+        });
+        engine.closeElement();
+        try engine.openElement(.{
+            .layout = .{ .sizing = Sizing.fixed(200, 100) },
+        });
+        engine.closeElement();
+        engine.closeElement();
+    }
+
+    engine.closeElement();
+    return 1 + group_count * 3;
+}
+
+test "validate: nested_floating_overlays" {
+    try validateBenchmark(buildNestedFloatingOverlays, 385);
+}
+
+// =============================================================================
+// Main Entry Point (for benchmark executable)
+// =============================================================================
+
+/// Print a layout benchmark result and record it in the JSON reporter.
+/// Maps the layout-specific `node_count` field to the common `operation_count`.
+fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
+    result.print();
+    reporter.addEntry(bench.entry(
+        result.name,
+        result.node_count,
+        result.total_time_ns,
+        result.iterations,
+        result.minPerOpNs(),
+    ));
+}
+
+pub fn main(init: std.process.Init) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var reporter = bench.Reporter.init("layout", init.io, init.minimal.args.vector);
+
+    std.debug.print("\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
+    std.debug.print("Gooey Layout Engine Benchmarks — Layout Only (endFrame)\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
+    std.debug.print("| {s:<40} | {s:>8} | {s:>13} | {s:>14} |\n", .{
+        "Test",
+        "Nodes",
+        "Avg Time",
+        "Time/Node",
+    });
+    std.debug.print(&@as([90]u8, @splat('-')) ++ "\n", .{});
+
+    // Smallest first
+    collect(&reporter, runBenchmark(allocator, "nested_floating_overlays", buildNestedFloatingOverlays));
+    collect(&reporter, runBenchmark(allocator, "wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
+    collect(&reporter, runBenchmark(allocator, "deep_nesting", buildDeepNesting));
+    collect(&reporter, runBenchmark(allocator, "space_distribution", buildSpaceDistribution));
+    collect(&reporter, runBenchmark(allocator, "percentage_sizing", buildPercentageSizing));
+    collect(&reporter, runBenchmark(allocator, "shrink_overflow", buildShrinkOverflow));
+    collect(&reporter, runBenchmark(allocator, "expand_with_max_constraint", buildExpandWithMaxConstraint));
+    collect(&reporter, runBenchmark(allocator, "expand_with_min_constraint", buildExpandWithMinConstraint));
+    collect(&reporter, runBenchmark(allocator, "mixed_layout", buildMixedLayout));
+    // PanGui comparison benchmarks (larger node counts)
+    collect(&reporter, runBenchmark(allocator, "nested_vertical_stack", buildNestedVerticalStack));
+    collect(&reporter, runBenchmark(allocator, "percentage_and_ratio", buildPercentageAndRatio));
+    collect(&reporter, runBenchmark(allocator, "flex_expand_equal_weights", buildFlexExpandEqualWeights));
+    collect(&reporter, runBenchmark(allocator, "flex_expand_weights", buildFlexExpandWeights));
+
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
+
+    // Full frame benchmarks (tree construction + layout)
+    std.debug.print("\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
+    std.debug.print("Gooey Layout Engine Benchmarks — Full Frame (build + layout)\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
+    std.debug.print("| {s:<40} | {s:>8} | {s:>13} | {s:>14} |\n", .{
+        "Test",
+        "Nodes",
+        "Avg Time",
+        "Time/Node",
+    });
+    std.debug.print(&@as([90]u8, @splat('-')) ++ "\n", .{});
+
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_nested_floating_overlays", buildNestedFloatingOverlays));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_deep_nesting", buildDeepNesting));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_space_distribution", buildSpaceDistribution));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_percentage_sizing", buildPercentageSizing));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_shrink_overflow", buildShrinkOverflow));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_expand_with_max_constraint", buildExpandWithMaxConstraint));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_expand_with_min_constraint", buildExpandWithMinConstraint));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_mixed_layout", buildMixedLayout));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_nested_vertical_stack", buildNestedVerticalStack));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_percentage_and_ratio", buildPercentageAndRatio));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_flex_expand_equal_weights", buildFlexExpandEqualWeights));
+    collect(&reporter, runFullFrameBenchmark(allocator, "full_flex_expand_weights", buildFlexExpandWeights));
+
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
+
+    std.debug.print("\nLayout Only = endFrame() only. Full Frame = beginFrame + tree build + endFrame.\n", .{});
+    std.debug.print("Iterations are adaptive based on node count (fewer for large tests).\n", .{});
+    std.debug.print("\nCurrent MAX_ELEMENTS_PER_FRAME = {d}\n", .{layout.engine.MAX_ELEMENTS_PER_FRAME});
+    std.debug.print("PanGui benchmarks use up to 100k+ nodes for comparison.\n", .{});
+
+    reporter.finish();
+}

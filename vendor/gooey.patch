@@ -1,0 +1,3473 @@
+diff --git a/components/src/code_editor.zig b/components/src/code_editor.zig
+index 6f9109d..eceb3f7 100644
+--- a/components/src/code_editor.zig
++++ b/components/src/code_editor.zig
+@@ -73,6 +73,7 @@ pub const CodeEditor = struct {
+     // =========================================================================
+ 
+     scrollbar_width: f32 = 8,
++    scrollbar_padding: f32 = 2,
+     scrollbar_track_color: ?Color = null,
+     scrollbar_thumb_color: ?Color = null,
+ 
+@@ -83,6 +84,9 @@ pub const CodeEditor = struct {
+     /// Show line numbers in the gutter
+     show_line_numbers: bool = true,
+ 
++    /// Wrap long lines at the editor's width instead of scrolling sideways
++    soft_wrap: bool = false,
++
+     /// Width of the line number gutter in pixels
+     gutter_width: f32 = 50,
+ 
+@@ -126,6 +130,9 @@ pub const CodeEditor = struct {
+     /// File encoding displayed in status bar
+     encoding: []const u8 = "UTF-8",
+ 
++    /// Colors the visible text each render (null = plain text)
++    highlighter: ?gooey.widgets.code_editor_state.Highlighter = null,
++
+     // =========================================================================
+     // Tab behavior
+     // =========================================================================
+@@ -216,9 +223,11 @@ pub const CodeEditor = struct {
+                 .selection_color = selection_color,
+                 .cursor_color = cursor_color,
+                 .scrollbar_width = self.scrollbar_width,
++                .scrollbar_padding = self.scrollbar_padding,
+                 .scrollbar_track_color = scrollbar_track_color,
+                 .scrollbar_thumb_color = scrollbar_thumb_color,
+                 .show_line_numbers = self.show_line_numbers,
++                .soft_wrap = self.soft_wrap,
+                 .gutter_width = self.gutter_width,
+                 .gutter_background = gutter_background,
+                 .line_number_color = line_number_color,
+@@ -234,6 +243,7 @@ pub const CodeEditor = struct {
+                 .status_bar_separator_color = status_bar_separator_color,
+                 .language_mode = self.language_mode,
+                 .encoding = self.encoding,
++                .highlighter = self.highlighter,
+                 .tab_index = self.tab_index,
+                 .tab_stop = self.tab_stop,
+                 .on_blur_handler = self.on_blur,
+diff --git a/src/context/window.zig b/src/context/window.zig
+index 701f6f8..04cdeb2 100644
+--- a/src/context/window.zig
++++ b/src/context/window.zig
+@@ -321,6 +321,14 @@ pub const Window = struct {
+     /// Layout ID of current drop target (for drag-over styling)
+     drag_over_target: ?u32 = null,
+ 
++    /// Sees key and text input, and mouse presses, drags and wheels, before
++    /// focused widgets and handlers do (e.g. a vim layer, a terminal);
++    /// returning true consumes the event.
++    key_capture: ?*const fn (*Window, InputEvent) bool = null,
++
++    /// The press being dispatched, so click handlers can tell a right click.
++    mouse_down: input_mod.MouseEvent = .{ .position = .{ .x = 0, .y = 0 }, .button = .left, .click_count = 0, .modifiers = .{} },
++
+     // `debugger` lives in `globals`; access via `window.debugger()`. The
+     // accessor reads from the type-keyed store — one indirection vs. a
+     // direct field, but it keeps singletons off the struct surface.
+@@ -1090,6 +1098,8 @@ pub const Window = struct {
+         // Deferred command queue
+         self.deferred_commands = undefined;
+         self.deferred_count = 0;
++        self.key_capture = null;
++        self.mouse_down = .{ .position = .{ .x = 0, .y = 0 }, .button = .left, .click_count = 0, .modifiers = .{} };
+ 
+         // Hover, blur, cancel subsystems (in-place to avoid stack temps)
+         self.hover.initInPlace();
+@@ -1248,8 +1258,12 @@ pub const Window = struct {
+             self.scale_factor = @floatCast(w.scale_factor);
+         }
+ 
+-        // Sync scale factor to text system for correct glyph rasterization
+-        // self.resources.text_system.setScaleFactor(self.scale_factor);
++        // The shared rasterizers take this window's scale: windows on 1x and
++        // 2x displays build their frames in turn, under one render lock, and
++        // each cache key carries its scale, so both sets of glyphs stay cached.
++        self.resources.text_system.setScaleFactor(self.scale_factor);
++        self.resources.svg_atlas.setScaleFactor(self.scale_factor);
++        self.resources.image_atlas.setScaleFactor(self.scale_factor);
+ 
+         // The build target is `next_frame.scene`. The end-of-frame
+         // `mem.swap` already cleared this slot post-swap, so the clear is
+@@ -1878,13 +1892,15 @@ pub const Window = struct {
+ 
+ fn measureTextCallback(
+     text_content: []const u8,
+-    _: u16, // font_id (future use)
++    font_id: u16,
+     font_size: u16,
+     _: ?f32, // max_width
+     user_data: ?*anyopaque,
+ ) TextMeasurement {
+     if (user_data) |ptr| {
+         const text_system: *TextSystem = @ptrCast(@alignCast(ptr));
++        text_system.useFont(font_id);
++        defer text_system.useFont(0);
+         const metrics = text_system.getMetrics() orelse return .{ .width = 0, .height = 20 };
+ 
+         // Scale factor: requested size / base font size
+diff --git a/src/image/atlas.zig b/src/image/atlas.zig
+index c6493e4..90d89fa 100644
+--- a/src/image/atlas.zig
++++ b/src/image/atlas.zig
+@@ -209,10 +209,7 @@ pub const ImageAtlas = struct {
+     }
+ 
+     pub fn setScaleFactor(self: *Self, scale: f64) void {
+-        if (self.scale_factor != scale) {
+-            self.scale_factor = scale;
+-            self.clear();
+-        }
++        self.scale_factor = scale; // keys carry the device size: no clear
+     }
+ 
+     /// Increment frame counter (call once per frame)
+diff --git a/src/image/loader.zig b/src/image/loader.zig
+index fe46d6c..09750c6 100644
+--- a/src/image/loader.zig
++++ b/src/image/loader.zig
+@@ -439,6 +439,16 @@ pub fn load(allocator: std.mem.Allocator, source: ImageSource, io: std.Io) LoadE
+ /// Load image from raw bytes (PNG, JPEG, etc.)
+ pub const loadFromMemory = backend.loadFromMemory;
+ 
++/// Image files embedded in the app (`@embedFile`), by name: an image whose
++/// source is one of these names decodes its bytes instead of reading a file.
++pub const Embedded = struct { name: []const u8, data: []const u8 };
++pub var embedded: []const Embedded = &.{};
++
++pub fn findEmbedded(name: []const u8) ?[]const u8 {
++    for (embedded) |e| if (std.mem.eql(u8, e.name, name)) return e.data;
++    return null;
++}
++
+ /// Load image from file path
+ /// Note: Not supported on WASM - use embedded images or URL loading instead.
+ pub const loadFromPath = if (is_wasm)
+diff --git a/src/input/actions.zig b/src/input/actions.zig
+index 28a9841..79157bd 100644
+--- a/src/input/actions.zig
++++ b/src/input/actions.zig
+@@ -107,6 +107,9 @@ pub const Keystroke = struct {
+             .{ "6", .@"6" },        .{ "7", .@"7" },      .{ "8", .@"8" },           .{ "9", .@"9" },
+             // Special keys
+             .{ "escape", .escape }, .{ "esc", .escape },  .{ "return", .@"return" }, .{ "enter", .@"return" },
++            .{ "=", .equal },       .{ "equal", .equal }, .{ "-", .minus },          .{ "minus", .minus },
++            .{ "\\", .backslash }, .{ "backslash", .backslash }, .{ ",", .comma },       .{ "comma", .comma },
++            .{ "`", .grave },       .{ "grave", .grave },
+             .{ "tab", .tab },       .{ "space", .space }, .{ "backspace", .delete }, .{ "delete", .forward_delete },
+             // Arrows
+             .{ "up", .up },         .{ "down", .down },   .{ "left", .left },        .{ "right", .right },
+diff --git a/src/input/events.zig b/src/input/events.zig
+index 29552a3..1899b62 100644
+--- a/src/input/events.zig
++++ b/src/input/events.zig
+@@ -168,6 +168,10 @@ pub const ScrollEvent = struct {
+     position: geometry.Point(f64),
+     delta: geometry.Point(f64),
+     modifiers: Modifiers,
++    /// When the input happened (awake-clock µs); 0 = unknown, use arrival.
++    time_us: i64 = 0,
++    /// A trackpad or other precise device (continuous motion, not notches).
++    precise: bool = false,
+ };
+ 
+ pub const KeyEvent = struct {
+diff --git a/src/platform/interface.zig b/src/platform/interface.zig
+index 3f6f814..35665cf 100644
+--- a/src/platform/interface.zig
++++ b/src/platform/interface.zig
+@@ -310,6 +310,10 @@ pub const WindowOptions = struct {
+     /// Extend content under the titlebar (macOS only).
+     full_size_content: bool = false,
+ 
++    /// Top-left position of the traffic-light buttons, measured from the
++    /// window's top-left corner (macOS only). Null keeps the system layout.
++    traffic_light_position: ?geometry.Point(f64) = null,
++
+     /// Effective clear color for this configuration.
+     ///
+     /// A glass style requires a transparent clear so the host-composited
+diff --git a/src/platform/macos/appearance.zig b/src/platform/macos/appearance.zig
+new file mode 100644
+index 0000000..f7985d9
+--- /dev/null
++++ b/src/platform/macos/appearance.zig
+@@ -0,0 +1,48 @@
++//! The app's light/dark appearance (NSApp.appearance), which windows, menus
++//! and panels inherit, and whether it is dark.
++//!
++//! `isDark` is read while rendering, off the main thread, so it is kept in an
++//! atomic: `set` and views told their appearance changed
++//! (`viewDidChangeEffectiveAppearance`, which also re-renders) update it on
++//! the main thread. An app following the system thus sees a switch at once.
++
++const std = @import("std");
++const objc = @import("objc");
++
++var dark = std.atomic.Value(bool).init(false);
++
++/// Forces light (false) or dark (true); null follows the system. Main thread.
++pub fn set(mode: ?bool) void {
++    const value: ?*anyopaque = if (mode) |d| named(if (d) "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua") else null;
++    app().msgSend(void, "setAppearance:", .{value});
++    update(app());
++}
++
++/// The app's effective appearance is dark (the system's while `set(null)`).
++pub fn isDark() bool {
++    return dark.load(.monotonic);
++}
++
++/// Re-reads `object`'s effective appearance (NSApp, or a view); main thread.
++pub fn update(object: objc.Object) void {
++    dark.store(readDark(object), .monotonic);
++}
++
++fn readDark(object: objc.Object) bool {
++    const appearance = object.msgSend(?*anyopaque, "effectiveAppearance", .{}) orelse return false;
++    const name = objc.Object.fromId(appearance).msgSend(?*anyopaque, "name", .{}) orelse return false;
++    const utf8 = objc.Object.fromId(name).msgSend(?[*:0]const u8, "UTF8String", .{}) orelse return false;
++    return std.mem.indexOf(u8, std.mem.span(utf8), "Dark") != null;
++}
++
++fn named(name: [:0]const u8) ?*anyopaque {
++    const NSAppearance = objc.getClass("NSAppearance") orelse return null;
++    const NSString = objc.getClass("NSString") orelse return null;
++    const ns_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{name.ptr});
++    return NSAppearance.msgSend(?*anyopaque, "appearanceNamed:", .{ns_name.value});
++}
++
++fn app() objc.Object {
++    const NSApplication = objc.getClass("NSApplication").?;
++    return NSApplication.msgSend(objc.Object, "sharedApplication", .{});
++}
+diff --git a/src/platform/macos/input_view.zig b/src/platform/macos/input_view.zig
+index 23038ae..c865077 100644
+--- a/src/platform/macos/input_view.zig
++++ b/src/platform/macos/input_view.zig
+@@ -7,6 +7,8 @@ const input = @import("../../input/events.zig");
+ const geometry = @import("../../core/geometry.zig");
+ const appkit = @import("appkit.zig");
+ const Window = @import("window.zig").Window;
++const menu = @import("menu.zig");
++const appearance = @import("appearance.zig");
+ 
+ const NSRect = appkit.NSRect;
+ const NSPoint = appkit.NSPoint;
+@@ -40,6 +42,8 @@ pub fn registerClass() !void {
+     // Required for receiving events
+     if (!cls.addMethod("acceptsFirstResponder", acceptsFirstResponder)) return error.MethodAddFailed;
+     if (!cls.addMethod("isFlipped", isFlipped)) return error.MethodAddFailed;
++    if (!cls.addMethod("acceptsFirstMouse:", acceptsFirstMouse)) return error.MethodAddFailed;
++    if (!cls.addMethod("viewDidChangeEffectiveAppearance", viewDidChangeEffectiveAppearance)) return error.MethodAddFailed;
+ 
+     // Keyboard events
+     if (!cls.addMethod("keyDown:", keyDown)) return error.MethodAddFailed;
+@@ -71,6 +75,10 @@ pub fn registerClass() !void {
+     if (!cls.addMethod("doCommandBySelector:", doCommandBySelector)) return error.MethodAddFailed;
+     if (!cls.addMethod("performKeyEquivalent:", performKeyEquivalent)) return error.MethodAddFailed;
+ 
++    // Menu items (`menu.zig`) reach the view up the responder chain
++    if (!cls.addMethod("gooeyMenuKey:", gooeyMenuKey)) return error.MethodAddFailed;
++    if (!cls.addMethod("gooeyMenuPick:", gooeyMenuPick)) return error.MethodAddFailed;
++
+     objc.registerClassPair(cls);
+     view_class = cls;
+ }
+@@ -180,6 +188,19 @@ fn isFlipped(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
+     return true;
+ }
+ 
++/// A click in a window that isn't key acts too, not only focuses it.
++fn acceptsFirstMouse(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) bool {
++    return true;
++}
++
++/// Light/dark switched (the system's, or the app's): note it and redraw, so
++/// an app following the system picks its colors again (`appearance.isDark`).
++fn viewDidChangeEffectiveAppearance(self: objc.c.id, _: objc.c.SEL) callconv(.c) void {
++    appearance.update(objc.Object.fromId(self));
++    const window = getWindow(self) orelse return;
++    window.requestRender();
++}
++
+ // =============================================================================
+ // Mouse Method Implementations
+ // =============================================================================
+@@ -236,13 +257,24 @@ fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c)
+     const delta_y = event.msgSend(f64, "scrollingDeltaY", .{});
+     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
+ 
++    // Trackpads and other precise devices already report points; a line-based
++    // wheel reports lines. Bring both to the points the widgets scroll in.
++    const precise = event.msgSend(bool, "hasPreciseScrollingDeltas", .{});
++    const scale: f64 = if (precise) 1 else wheel_line_points;
++
+     _ = window.handleInput(.{ .scroll = .{
+         .position = geometry.Point(f64).init(view_loc.x, view_loc.y),
+-        .delta = geometry.Point(f64).init(delta_x, delta_y),
++        .delta = geometry.Point(f64).init(delta_x * scale, delta_y * scale),
+         .modifiers = parseModifiers(modifier_flags),
++        // Seconds since boot on the awake clock, stamped when the input happened.
++        .time_us = @intFromFloat(event.msgSend(f64, "timestamp", .{}) * 1e6),
++        .precise = precise,
+     } });
+ }
+ 
++/// Height of one wheel line; keeps a non-precise wheel notch at ~20px.
++const wheel_line_points: f64 = 20;
++
+ // =============================================================================
+ // Keyboard Method Implementations
+ // =============================================================================
+@@ -399,6 +431,15 @@ fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) cal
+     return false;
+ }
+ 
++fn gooeyMenuKey(self: objc.c.id, _: objc.c.SEL, sender: objc.c.id) callconv(.c) void {
++    const window = getWindow(self) orelse return;
++    _ = window.handleInput(.{ .key_down = menu.keyEvent(objc.Object.fromId(sender)) });
++}
++
++fn gooeyMenuPick(_: objc.c.id, _: objc.c.SEL, sender: objc.c.id) callconv(.c) void {
++    menu.pick(objc.Object.fromId(sender));
++}
++
+ fn setMarkedText(
+     self: objc.c.id,
+     _: objc.c.SEL,
+diff --git a/src/platform/macos/menu.zig b/src/platform/macos/menu.zig
+new file mode 100644
+index 0000000..c660873
+--- /dev/null
++++ b/src/platform/macos/menu.zig
+@@ -0,0 +1,118 @@
++//! Native menus: the menu bar and context menus (NSMenu).
++//!
++//! A menu-bar item either sends a standard AppKit action up the responder
++//! chain (`terminate:`, `hide:`…) or replays its keystroke to the key window,
++//! so picking "Close" runs the same keymap binding as pressing ⌘W.
++
++const objc = @import("objc");
++const input = @import("../../input/events.zig");
++const appkit = @import("appkit.zig");
++
++pub const Item = struct {
++    /// Empty draws a separator.
++    title: [:0]const u8 = "",
++    /// Key equivalent AppKit shows and matches, e.g. "w"; "" for none.
++    key: [:0]const u8 = "",
++    mods: input.Modifiers = .{ .cmd = true },
++    /// Keystroke replayed to the key window when the item is picked.
++    code: input.KeyCode = .unknown,
++    /// A standard action instead, e.g. "terminate:".
++    action: ?[:0]const u8 = null,
++};
++
++pub const Menu = struct {
++    title: [:0]const u8,
++    items: []const Item,
++};
++
++/// Replaces the menu bar. macOS shows the first menu under the app's name.
++pub fn setMainMenu(menus: []const Menu) void {
++    const bar = newMenu("");
++    for (menus) |m| {
++        const sub = newMenu(m.title);
++        for (m.items) |it| sub.msgSend(void, "addItem:", .{newItem(it).value});
++        const holder = newItem(.{ .title = m.title });
++        holder.msgSend(void, "setSubmenu:", .{sub.value});
++        bar.msgSend(void, "addItem:", .{holder.value});
++    }
++    app().msgSend(void, "setMainMenu:", .{bar.value});
++}
++
++var picked: ?usize = null;
++
++/// Shows `titles` as a context menu at the mouse and returns the picked index.
++/// It runs a nested event loop, so call it after input handling (`deferCommand`).
++pub fn popUp(titles: []const [:0]const u8) ?usize {
++    return popUpSelect(titles, null);
++}
++
++/// Like `popUp`, for a choice: `selected` gets a checkmark and opens under
++/// the mouse, as in a pop-up button.
++pub fn popUpSelect(titles: []const [:0]const u8, selected: ?usize) ?usize {
++    const menu = newMenu("");
++    var under: ?*anyopaque = null;
++    for (titles, 0..) |t, i| {
++        const it = newItem(.{ .title = t, .action = "gooeyMenuPick:" });
++        it.msgSend(void, "setTag:", .{@as(c_long, @intCast(i))});
++        if (selected == i) {
++            it.msgSend(void, "setState:", .{@as(c_long, 1)}); // NSControlStateValueOn
++            under = it.value;
++        }
++        menu.msgSend(void, "addItem:", .{it.value});
++    }
++    const NSEvent = objc.getClass("NSEvent") orelse return null;
++    const at = NSEvent.msgSend(appkit.NSPoint, "mouseLocation", .{});
++    picked = null;
++    _ = menu.msgSend(bool, "popUpMenuPositioningItem:atLocation:inView:", .{ under, at, @as(?*anyopaque, null) });
++    return picked;
++}
++
++/// The input view's `gooeyMenuPick:`: records a context-menu choice.
++pub fn pick(sender: objc.Object) void {
++    picked = @intCast(sender.msgSend(c_long, "tag", .{}));
++}
++
++/// The input view's `gooeyMenuKey:`: the keystroke a menu-bar item replays.
++pub fn keyEvent(sender: objc.Object) input.KeyEvent {
++    const mask = appkit.NSEventModifierFlags.from(sender.msgSend(c_ulong, "keyEquivalentModifierMask", .{}));
++    return .{
++        .key = input.KeyCode.from(@intCast(sender.msgSend(c_long, "tag", .{}))),
++        .modifiers = .{ .shift = mask.shift, .ctrl = mask.control, .alt = mask.option, .cmd = mask.command },
++        .characters = null,
++        .characters_ignoring_modifiers = null,
++        .is_repeat = false,
++    };
++}
++
++fn app() objc.Object {
++    const NSApplication = objc.getClass("NSApplication").?;
++    return NSApplication.msgSend(objc.Object, "sharedApplication", .{});
++}
++
++fn newMenu(title: [:0]const u8) objc.Object {
++    const menu = objc.getClass("NSMenu").?.msgSend(objc.Object, "alloc", .{});
++    return menu.msgSend(objc.Object, "initWithTitle:", .{string(title).value});
++}
++
++fn newItem(it: Item) objc.Object {
++    const NSMenuItem = objc.getClass("NSMenuItem").?;
++    if (it.title.len == 0) return NSMenuItem.msgSend(objc.Object, "separatorItem", .{});
++    const action: ?[:0]const u8 = it.action orelse if (it.code != .unknown) "gooeyMenuKey:" else null;
++    const item = NSMenuItem.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "initWithTitle:action:keyEquivalent:", .{
++        string(it.title).value,
++        if (action) |a| objc.sel(a).value else null,
++        string(it.key).value,
++    });
++    var mask: c_ulong = 0;
++    if (it.mods.shift) mask |= 1 << 17;
++    if (it.mods.ctrl) mask |= 1 << 18;
++    if (it.mods.alt) mask |= 1 << 19;
++    if (it.mods.cmd) mask |= 1 << 20;
++    item.msgSend(void, "setKeyEquivalentModifierMask:", .{mask});
++    item.msgSend(void, "setTag:", .{@as(c_long, @intFromEnum(it.code))});
++    return item;
++}
++
++fn string(s: [:0]const u8) objc.Object {
++    return objc.getClass("NSString").?.msgSend(objc.Object, "stringWithUTF8String:", .{s.ptr});
++}
+diff --git a/src/platform/macos/metal/quad.zig b/src/platform/macos/metal/quad.zig
+index 6750312..810bf76 100644
+--- a/src/platform/macos/metal/quad.zig
++++ b/src/platform/macos/metal/quad.zig
+@@ -63,6 +63,13 @@ pub const quad_shader_source =
+     \\    return float4(rgb + m, a);
+     \\}
+     \\
++    \\// Mix straight-alpha colors through premultiplied space, so blending toward
++    \\// a transparent color never pulls in its (black) rgb.
++    \\float4 mix_straight(float4 a, float4 b, float t) {
++    \\    float4 p = mix(float4(a.rgb * a.a, a.a), float4(b.rgb * b.a, b.a), t);
++    \\    return p.a > 0.0 ? float4(p.rgb / p.a, p.a) : float4(0.0);
++    \\}
++    \\
+     \\float rounded_rect_sdf(float2 pos, float2 half_size, float radius) {
+     \\    float2 d = abs(pos) - half_size + radius;
+     \\    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
+@@ -146,11 +153,11 @@ pub const quad_shader_source =
+     \\        );
+     \\        float inner_radius = pick_corner_radius(inner_pos, inner_radii);
+     \\        float inner_dist = rounded_rect_sdf(inner_pos, inner_half_size, inner_radius);
+-    \\        float border_blend = smoothstep(-0.5, 0.5, inner_dist);
+-    \\        color = mix(in.color, in.border_color, border_blend);
++    \\        float border_blend = saturate(0.5 + inner_dist / max(fwidth(inner_dist), 1e-4));
++    \\        color = mix_straight(in.color, in.border_color, border_blend);
+     \\    }
+     \\
+-    \\    float alpha = 1.0 - smoothstep(-0.5, 0.5, outer_dist);
++    \\    float alpha = saturate(0.5 - outer_dist / max(fwidth(outer_dist), 1e-4));
+     \\    return color * float4(1.0, 1.0, 1.0, alpha);
+     \\}
+ ;
+diff --git a/src/platform/macos/metal/shadow.zig b/src/platform/macos/metal/shadow.zig
+index 0aabba4..08643ea 100644
+--- a/src/platform/macos/metal/shadow.zig
++++ b/src/platform/macos/metal/shadow.zig
+@@ -69,8 +69,41 @@ pub const shadow_shader_source =
+     \\    }
+     \\}
+     \\
+-    \\float shadow_falloff(float distance, float blur) {
+-    \\    return 1.0 - smoothstep(-blur * 0.5, blur * 1.5, distance);
++    \\// GPUI's shadow: a rounded rect convolved with a gaussian (sigma = blur radius).
++    \\float gaussian(float x, float sigma) {
++    \\    return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * M_PI_F) * sigma);
++    \\}
++    \\
++    \\float2 erf2(float2 x) {
++    \\    float2 s = sign(x);
++    \\    float2 a = abs(x);
++    \\    float2 r1 = 1.0 + (0.278393 + (0.230389 + (0.000972 + 0.078108 * a) * a) * a) * a;
++    \\    float2 r2 = r1 * r1;
++    \\    return s - s / (r2 * r2);
++    \\}
++    \\
++    \\float blur_along_x(float x, float y, float sigma, float corner, float2 half_size) {
++    \\    float delta = min(half_size.y - corner - abs(y), 0.0);
++    \\    float curved = half_size.x - corner + sqrt(max(0.0, corner * corner - delta * delta));
++    \\    float2 integral = 0.5 + 0.5 * erf2((x + float2(-curved, curved)) * (sqrt(0.5) / sigma));
++    \\    return integral.y - integral.x;
++    \\}
++    \\
++    \\float shadow_alpha(float2 point, float2 half_size, float corner, float sigma) {
++    \\    if (sigma == 0.0) {
++    \\        float d = rounded_rect_sdf(point, half_size, corner);
++    \\        return saturate(0.5 - d / max(fwidth(d), 1e-4));
++    \\    }
++    \\    float start = clamp(-3.0 * sigma, point.y - half_size.y, point.y + half_size.y);
++    \\    float end = clamp(3.0 * sigma, point.y - half_size.y, point.y + half_size.y);
++    \\    float step = (end - start) / 4.0;
++    \\    float y = start + step * 0.5;
++    \\    float alpha = 0.0;
++    \\    for (int i = 0; i < 4; i++) {
++    \\        alpha += blur_along_x(point.x, point.y - y, sigma, corner, half_size) * gaussian(y, sigma) * step;
++    \\        y += step;
++    \\    }
++    \\    return alpha;
+     \\}
+     \\
+     \\vertex ShadowVertexOutput shadow_vertex(
+@@ -83,7 +116,7 @@ pub const shadow_shader_source =
+     \\    float2 unit = unit_vertices[vid];
+     \\    Shadow s = shadows[iid];
+     \\
+-    \\    float expand = s.blur_radius * 2.0;
++    \\    float expand = s.blur_radius * 3.0;
+     \\    float2 content_origin = float2(s.content_origin_x, s.content_origin_y);
+     \\    float2 content_size = float2(s.content_size_width, s.content_size_height);
+     \\    float2 offset = float2(s.offset_x, s.offset_y);
+@@ -94,7 +127,7 @@ pub const shadow_shader_source =
+     \\    float2 pos = shadow_origin + unit * shadow_size;
+     \\    float2 ndc = pos / *viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
+     \\
+-    \\    float2 local = (unit * shadow_size) - (shadow_size / 2.0) - offset;
++    \\    float2 local = (unit * shadow_size) - (shadow_size / 2.0);
+     \\
+     \\    ShadowVertexOutput out;
+     \\    out.position = float4(ndc, 0.0, 1.0);
+@@ -109,8 +142,7 @@ pub const shadow_shader_source =
+     \\fragment float4 shadow_fragment(ShadowVertexOutput in [[stage_in]]) {
+     \\    float2 half_size = in.content_size / 2.0;
+     \\    float radius = pick_corner_radius(in.local_pos, in.corner_radii);
+-    \\    float dist = rounded_rect_sdf(in.local_pos, half_size, radius);
+-    \\    float alpha = shadow_falloff(dist, in.blur_radius);
++    \\    float alpha = shadow_alpha(in.local_pos, half_size, radius, in.blur_radius);
+     \\    return float4(in.color.rgb, in.color.a * alpha);
+     \\}
+ ;
+diff --git a/src/platform/macos/mod.zig b/src/platform/macos/mod.zig
+index 4c40155..55c61f8 100644
+--- a/src/platform/macos/mod.zig
++++ b/src/platform/macos/mod.zig
+@@ -39,6 +39,8 @@ pub const display_link = @import("display_link.zig");
+ // System services
+ pub const clipboard = @import("clipboard.zig");
+ pub const file_dialog = @import("file_dialog.zig");
++pub const menu = @import("menu.zig");
++pub const appearance = @import("appearance.zig");
+ 
+ // Low-level bindings
+ pub const appkit = @import("appkit.zig");
+diff --git a/src/platform/macos/window.zig b/src/platform/macos/window.zig
+index 58db814..509cbf9 100644
+--- a/src/platform/macos/window.zig
++++ b/src/platform/macos/window.zig
+@@ -24,6 +24,9 @@ const WindowId = interface_mod.WindowId;
+ const GlassStyle = interface_mod.GlassStyle;
+ const WindowOptions = interface_mod.WindowOptions;
+ 
++/// How long a scroll gesture keeps presenting at vsync after its last event.
++const scroll_render_cooldown_ms: i64 = 200;
++
+ /// Maximum window title length in bytes, excluding the NUL terminator.
+ ///
+ /// Matches the Linux backend's bound so an application that fits one host
+@@ -44,6 +47,8 @@ const AtlasUploadFn = *const fn (ctx: *anyopaque, renderer: *metal.Renderer) any
+ /// is bounded rather than taken on trust from the caller's slice.
+ const custom_shader_count_max: usize = 64;
+ 
++var shared_render_mutex: Mutex = .{};
++
+ pub const Window = struct {
+     allocator: std.mem.Allocator,
+ 
+@@ -102,13 +107,16 @@ pub const Window = struct {
+     glass_style: GlassStyle = .none,
+     background_opacity: f64 = 1.0,
+     glass_corner_radius: f64 = 16.0,
++    traffic_light_position: ?geometry.Point(f64) = null,
+ 
+     /// Mutex protecting all render-related state accessed from DisplayLink thread.
+     /// This includes: scene, text_atlas, background_color, size, scale_factor, renderer.
+     /// Must be held when:
+     /// - DisplayLink callback reads scene/atlas for rendering
+     /// - Main thread modifies scene/atlas/size
+-    render_mutex: Mutex = .{},
++    /// One lock for every window: they share the text system and atlases, and
++    /// each renders on its own display link thread.
++    render_mutex: *Mutex = &shared_render_mutex,
+ 
+     /// Flag indicating we're in a live resize operation.
+     /// During live resize, the main thread handles rendering synchronously,
+@@ -119,7 +127,21 @@ pub const Window = struct {
+     /// Used to prevent the main thread from modifying state mid-render.
+     render_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+ 
+-    benchmark_mode: bool = true,
++    /// Present every vsync. Off: render only on request, so an idle window costs nothing.
++    benchmark_mode: bool = false,
++    /// Awake-clock ms of the earliest pending `requestRenderAfter`; 0 = none.
++    render_deadline_ms: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
++    /// While scrolling, present every vsync. Event delivery and the display
++    /// link are not phase-locked, so on-demand rendering skips a frame when an
++    /// event lands just after the callback, then the next frame moves twice as
++    /// far. Keeps the motion even; expires shortly after the last scroll event.
++    scroll_render_until_ms: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
++    /// Awake-clock µs at which the frame being rendered will be on screen;
++    /// 0 outside display-link renders. Animations step by it: the callback
++    /// itself runs with a jittery lead, the presentation times are one vsync apart.
++    frame_time_us: i64 = 0,
++    /// The metal layer's maximumDrawableCount (see displayLinkCallback).
++    drawable_count: u64 = 2,
+ 
+     /// Current mouse position (updated on every mouse event)
+     mouse_position: geometry.Point(f64) = .{ .x = 0, .y = 0 },
+@@ -296,6 +318,7 @@ pub const Window = struct {
+ 
+         // Make window key and visible, then mark for initial render.
+         self.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
++        self.moveTrafficLights();
+         self.requestRender();
+ 
+         // A newly ordered-front window claims focus. Every backend publishes
+@@ -387,6 +410,9 @@ pub const Window = struct {
+             },
+         );
+         if (self.ns_window.value == null) return error.WindowCreationFailed;
++        // Owned until `deinit`, which may run after the close (AppKit would
++        // otherwise free it on close).
++        self.ns_window.msgSend(void, "setReleasedWhenClosed:", .{false});
+ 
+         if (options.titlebar_transparent) {
+             self.ns_window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
+@@ -400,6 +426,8 @@ pub const Window = struct {
+         }
+ 
+         self.setTitle(options.title);
++        self.traffic_light_position = options.traffic_light_position;
++        self.moveTrafficLights();
+ 
+         if (options.min_size) |min| {
+             self.ns_window.msgSend(void, "setMinSize:", .{
+@@ -583,11 +611,14 @@ pub const Window = struct {
+ 
+     /// Set the scene (thread-safe)
+     pub fn setScene(self: *Self, s: *const scene_mod.Scene) void {
+-        // Only lock if we're not already in a render (which holds the lock)
+-        if (!self.render_in_progress.load(.acquire)) {
+-            self.render_mutex.lock();
+-            defer self.render_mutex.unlock();
++        // Inside a render (which holds the lock) this frame presents the scene;
++        // requesting another would re-render every vsync forever.
++        if (self.render_in_progress.load(.acquire)) {
++            self.scene = s;
++            return;
+         }
++        self.render_mutex.lock();
++        defer self.render_mutex.unlock();
+         self.scene = s;
+         self.requestRender();
+     }
+@@ -667,6 +698,13 @@ pub const Window = struct {
+                 self.mouse_position = m.position;
+                 self.mouse_inside = false;
+             },
++            .scroll => {
++                // Keep presenting while the gesture lasts, even across the
++                // short gaps between events (see scroll_render_until_ms).
++                const io = std.Io.Threaded.global_single_threaded.io();
++                const now_ms = std.Io.Timestamp.now(io, .awake).toMilliseconds();
++                self.scroll_render_until_ms.store(now_ms + scroll_render_cooldown_ms, .release);
++            },
+             else => {},
+         }
+ 
+@@ -753,12 +791,45 @@ pub const Window = struct {
+             dl.deinit();
+         }
+         self.renderer.deinit();
++        // Events still queued for the view must not reach this freed window.
++        self.ns_view.setInstanceVariable("_gooeyWindow", objc.Object.fromId(@as(objc.c.id, null)));
+         self.ns_window.msgSend(void, "close", .{});
++        self.ns_window.msgSend(void, "release", .{});
++        self.ns_view.msgSend(void, "release", .{});
+         self.allocator.destroy(self);
+     }
+ 
++    /// Reposition the close/minimize/zoom buttons. AppKit re-lays them out on
++    /// resize, so this runs again from `handleResize` (and `windowDidUpdate:`).
++    pub fn moveTrafficLights(self: *Self) void {
++        const position = self.traffic_light_position orelse return;
++        assert(position.x >= 0);
++        assert(position.y >= 0);
++
++        const frame: NSRect = self.ns_window.msgSend(NSRect, "frame", .{});
++        const layout: NSRect = self.ns_window.msgSend(NSRect, "contentLayoutRect", .{});
++        const titlebar_height = frame.size.height - layout.size.height;
++
++        var buttons: [3]objc.Object = undefined;
++        for (&buttons, 0..) |*button, kind| {
++            const value = self.ns_window.msgSend(?*anyopaque, "standardWindowButton:", .{@as(u64, kind)}) orelse return;
++            button.* = objc.Object.fromId(value);
++        }
++        const close_frame: NSRect = buttons[0].msgSend(NSRect, "frame", .{});
++        const minimize: NSRect = buttons[1].msgSend(NSRect, "frame", .{});
++        const spacing = minimize.origin.x - close_frame.origin.x;
++        assert(spacing > 0);
++
++        var origin = appkit.NSPoint{ .x = position.x, .y = titlebar_height - position.y - close_frame.size.height };
++        for (buttons) |button| {
++            button.msgSend(void, "setFrameOrigin:", .{origin});
++            origin.x += spacing;
++        }
++    }
++
+     /// Called by delegate when window is resized
+     pub fn handleResize(self: *Self) void {
++        self.moveTrafficLights();
+         const old_width = self.size.width;
+         const old_height = self.size.height;
+         const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
+@@ -872,6 +943,8 @@ pub const Window = struct {
+     }
+ 
+     pub fn handleFocusChange(self: *Self, focused: bool) void {
++        // AppKit re-lays out the titlebar buttons when key status changes.
++        self.moveTrafficLights();
+         _ = focused;
+         self.requestRender();
+     }
+@@ -898,6 +971,14 @@ pub const Window = struct {
+     /// Focus this window (bring to front and make key window).
+     ///
+     /// Makes this window the key window and orders it to the front.
++    /// AppKit saves the frame under `name` as it changes and restores it now,
++    /// so the window reopens where it was left.
++    pub fn autosaveFrame(self: *Self, name: [:0]const u8) void {
++        const NSString = objc.getClass("NSString") orelse return;
++        const ns_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{name.ptr});
++        _ = self.ns_window.msgSend(bool, "setFrameAutosaveName:", .{ns_name.value});
++    }
++
+     pub fn focus(self: *Self) void {
+         self.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
+     }
+@@ -929,6 +1010,14 @@ pub const Window = struct {
+     // Rendering
+     // =========================================================================
+ 
++    /// Returns whether the count changed.
++    fn setDrawableCount(self: *Self, n: u64) bool {
++        if (self.drawable_count == n) return false;
++        self.drawable_count = n;
++        self.metal_layer.msgSend(void, "setMaximumDrawableCount:", .{n});
++        return true;
++    }
++
+     /// Request a render on the next vsync
+     pub fn requestRender(self: *Self) void {
+         self.needs_render.store(true, .release);
+@@ -943,8 +1032,14 @@ pub const Window = struct {
+     /// being dropped.
+     pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+         std.debug.assert(delay_ms <= interface_mod.render_delay_ms_max);
++        if (self.benchmark_mode) return;
+ 
+-        if (!self.benchmark_mode) self.requestRender();
++        const io = std.Io.Threaded.global_single_threaded.io();
++        const deadline = std.Io.Timestamp.now(io, .awake).toMilliseconds() + delay_ms;
++        var current = self.render_deadline_ms.load(.acquire);
++        while (current == 0 or deadline < current) {
++            current = self.render_deadline_ms.cmpxchgWeak(current, deadline, .acq_rel, .acquire) orelse return;
++        }
+     }
+ 
+     /// Manual render (for when display link is disabled)
+@@ -1135,7 +1230,9 @@ pub const Window = struct {
+         self.metal_layer.msgSend(void, "setPixelFormat:", .{@as(u64, 80)});
+         self.metal_layer.msgSend(void, "setContentsScale:", .{self.scale_factor});
+         self.metal_layer.msgSend(void, "setDisplaySyncEnabled:", .{false});
+-        self.metal_layer.msgSend(void, "setMaximumDrawableCount:", .{@as(u64, 3)});
++        // Two while idle: a third window-sized surface (16 MB at 1280×820 on
++        // Retina) is only added during scrolling (see displayLinkCallback).
++        self.metal_layer.msgSend(void, "setMaximumDrawableCount:", .{@as(u64, 2)});
+ 
+         // Allow transparency through the Metal layer
+         self.metal_layer.msgSend(void, "setOpaque:", .{false});
+@@ -1313,6 +1410,22 @@ pub const Window = struct {
+ ///
+ /// The render_mutex protects: scene, text_atlas, size, scale_factor, background_color, renderer.
+ /// The on_render callback is called WITH the lock held to prevent race conditions.
++/// Claims a passed `requestRenderAfter` deadline.
++fn deadlineDue(window: *Window) bool {
++    const deadline = window.render_deadline_ms.load(.acquire);
++    if (deadline == 0) return false;
++    const io = std.Io.Threaded.global_single_threaded.io();
++    if (std.Io.Timestamp.now(io, .awake).toMilliseconds() < deadline) return false;
++    return window.render_deadline_ms.cmpxchgStrong(deadline, 0, .acq_rel, .acquire) == null;
++}
++
++/// Converts a CoreVideo host time (mach ticks) to the awake clock in µs.
++fn hostTimeUs(host_time: u64) i64 {
++    var tb: std.c.mach_timebase_info_data = undefined;
++    _ = std.c.mach_timebase_info(&tb);
++    return @intCast(host_time * tb.numer / tb.denom / 1000);
++}
++
+ fn displayLinkCallback(
+     dl: display_link.CVDisplayLinkRef,
+     in_now: *const display_link.CVTimeStamp,
+@@ -1323,7 +1436,6 @@ fn displayLinkCallback(
+ ) callconv(.c) display_link.CVReturn {
+     _ = dl;
+     _ = in_now;
+-    _ = in_output_time;
+     _ = flags_in;
+     _ = flags_out;
+ 
+@@ -1336,21 +1448,28 @@ fn displayLinkCallback(
+ 
+     // Always render if custom shader animation is enabled (for iTime)
+     const explicit_render = window.needs_render.swap(false, .acq_rel);
+-    const should_render =
+-        window.benchmark_mode or explicit_render or window.custom_shader_animation;
++    const deadline_render = deadlineDue(window);
+ 
+     // DEBUG. CVDisplayLink callbacks run on a dedicated vsync thread that
+     // does not carry a `*Cx`/`Gooey`, so we reach for the single-threaded
+     // global `Io` here — same escape hatch as the render mutex (Phase 5
+     // option 3 in the migration doc). `std.Io` is a pair of pointers into
+     // a process-lifetime vtable, so there's no allocation or cost.
++    const dl_io = std.Io.Threaded.global_single_threaded.io();
++    const now_ms = std.Io.Timestamp.now(dl_io, .awake).toMilliseconds();
++    const scroll_active = now_ms < window.scroll_render_until_ms.load(.acquire);
++    // Three drawables while scrolling: with two, nextDrawable waits for the
++    // one on screen and frames drop at 120Hz. Two otherwise, saving a
++    // window-sized surface; a count change takes effect on the next render.
++    const drawables_changed = window.setDrawableCount(if (scroll_active) 3 else 2);
++    const should_render = window.benchmark_mode or explicit_render or deadline_render or
++        scroll_active or drawables_changed or window.custom_shader_animation;
++
+     const static = struct {
+         var count: u32 = 0;
+         var last_print_ms: i64 = 0;
+     };
+     static.count += 1;
+-    const dl_io = std.Io.Threaded.global_single_threaded.io();
+-    const now_ms = std.Io.Timestamp.now(dl_io, .awake).toMilliseconds();
+     if (now_ms - static.last_print_ms > 1000) {
+         // Uncomment to trace callback rate:
+         // std.debug.print(
+@@ -1379,6 +1498,8 @@ fn displayLinkCallback(
+     // Call render callback to let user rebuild scene
+     // NOTE: This is called with the lock held, so the callback must not
+     // call any Window methods that also try to acquire the lock.
++    window.frame_time_us = hostTimeUs(in_output_time.host_time);
++    defer window.frame_time_us = 0;
+     if (window.on_render) |callback| {
+         callback(window);
+     }
+diff --git a/src/platform/macos/window_delegate.zig b/src/platform/macos/window_delegate.zig
+index 756977e..efc9385 100644
+--- a/src/platform/macos/window_delegate.zig
++++ b/src/platform/macos/window_delegate.zig
+@@ -41,12 +41,18 @@ pub fn registerClass() !void {
+     if (!cls.addMethod("windowDidResignKey:", windowDidResignKey)) {
+         return error.MethodAddFailed;
+     }
++    if (!cls.addMethod("windowDidUpdate:", windowDidUpdate)) {
++        return error.MethodAddFailed;
++    }
+     if (!cls.addMethod("windowWillStartLiveResize:", windowWillStartLiveResize)) {
+         return error.MethodAddFailed;
+     }
+     if (!cls.addMethod("windowDidEndLiveResize:", windowDidEndLiveResize)) {
+         return error.MethodAddFailed;
+     }
++    if (!cls.addMethod("applicationWillTerminate:", applicationWillTerminate)) {
++        return error.MethodAddFailed;
++    }
+ 
+     objc.registerClassPair(cls);
+     delegate_class = cls;
+@@ -67,6 +73,17 @@ pub fn create(window: *Window) !objc.Object {
+     const window_obj = objc.Object.fromId(@as(objc.c.id, @ptrCast(window)));
+     delegate.setInstanceVariable("_gooeyWindow", window_obj);
+ 
++    // Quitting (⌘Q, the Dock, logout) closes no windows, so the close
++    // callback hears of it here: its last chance to save.
++    const NSNotificationCenter = objc.getClass("NSNotificationCenter") orelse return error.ClassNotFound;
++    const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
++    NSNotificationCenter.msgSend(objc.Object, "defaultCenter", .{}).msgSend(void, "addObserver:selector:name:object:", .{
++        delegate.value,
++        objc.sel("applicationWillTerminate:").value,
++        NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"NSApplicationWillTerminateNotification"}).value,
++        @as(?*anyopaque, null),
++    });
++
+     return delegate;
+ }
+ 
+@@ -97,6 +114,11 @@ fn windowShouldClose(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c)
+     return window.handleClose();
+ }
+ 
++fn applicationWillTerminate(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
++    const window = getWindow(self) orelse return;
++    if (!window.closed) _ = window.handleClose();
++}
++
+ fn windowWillClose(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
+     // Deliberately empty. The previous comment claimed "cleanup happens in
+     // handleClose via windowShouldClose", which was never true: `handleClose`
+@@ -122,6 +144,13 @@ fn windowDidResignKey(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c)
+     window.handleFocusChange(false);
+ }
+ 
++/// AppKit re-lays out the titlebar after launch from a bundle, with no resize or
++/// key change to follow; this runs after every event cycle on the main thread.
++fn windowDidUpdate(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
++    const window = getWindow(self) orelse return;
++    window.moveTrafficLights();
++}
++
+ fn windowWillStartLiveResize(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
+     const window = getWindow(self) orelse return;
+     window.handleLiveResizeStart();
+diff --git a/src/platform/unified.zig b/src/platform/unified.zig
+index 11b2615..68f018d 100644
+--- a/src/platform/unified.zig
++++ b/src/platform/unified.zig
+@@ -299,6 +299,13 @@ pub const metal_shader_source =
+     \\    return float4(rgb + m, a);
+     \\}
+     \\
++    \\// Mix straight-alpha colors through premultiplied space, so blending toward
++    \\// a transparent color never pulls in its (black) rgb.
++    \\float4 mix_straight(float4 a, float4 b, float t) {
++    \\    float4 p = mix(float4(a.rgb * a.a, a.a), float4(b.rgb * b.a, b.a), t);
++    \\    return p.a > 0.0 ? float4(p.rgb / p.a, p.a) : float4(0.0);
++    \\}
++    \\
+     \\float rounded_rect_sdf(float2 pos, float2 half_size, float radius) {
+     \\    float2 d = abs(pos) - half_size + radius;
+     \\    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
+@@ -312,8 +319,41 @@ pub const metal_shader_source =
+     \\    }
+     \\}
+     \\
+-    \\float shadow_falloff(float distance, float blur) {
+-    \\    return 1.0 - smoothstep(-blur * 0.5, blur * 1.5, distance);
++    \\// GPUI's shadow: a rounded rect convolved with a gaussian (sigma = blur radius).
++    \\float gaussian(float x, float sigma) {
++    \\    return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * M_PI_F) * sigma);
++    \\}
++    \\
++    \\float2 erf2(float2 x) {
++    \\    float2 s = sign(x);
++    \\    float2 a = abs(x);
++    \\    float2 r1 = 1.0 + (0.278393 + (0.230389 + (0.000972 + 0.078108 * a) * a) * a) * a;
++    \\    float2 r2 = r1 * r1;
++    \\    return s - s / (r2 * r2);
++    \\}
++    \\
++    \\float blur_along_x(float x, float y, float sigma, float corner, float2 half_size) {
++    \\    float delta = min(half_size.y - corner - abs(y), 0.0);
++    \\    float curved = half_size.x - corner + sqrt(max(0.0, corner * corner - delta * delta));
++    \\    float2 integral = 0.5 + 0.5 * erf2((x + float2(-curved, curved)) * (sqrt(0.5) / sigma));
++    \\    return integral.y - integral.x;
++    \\}
++    \\
++    \\float shadow_alpha(float2 point, float2 half_size, float corner, float sigma) {
++    \\    if (sigma == 0.0) {
++    \\        float d = rounded_rect_sdf(point, half_size, corner);
++    \\        return saturate(0.5 - d / max(fwidth(d), 1e-4));
++    \\    }
++    \\    float start = clamp(-3.0 * sigma, point.y - half_size.y, point.y + half_size.y);
++    \\    float end = clamp(3.0 * sigma, point.y - half_size.y, point.y + half_size.y);
++    \\    float step = (end - start) / 4.0;
++    \\    float y = start + step * 0.5;
++    \\    float alpha = 0.0;
++    \\    for (int i = 0; i < 4; i++) {
++    \\        alpha += blur_along_x(point.x, point.y - y, sigma, corner, half_size) * gaussian(y, sigma) * step;
++    \\        y += step;
++    \\    }
++    \\    return alpha;
+     \\}
+     \\
+     \\vertex VertexOutput unified_vertex(
+@@ -347,7 +387,7 @@ pub const metal_shader_source =
+     \\        out.content_size = size;
+     \\        out.local_pos = float2(0, 0);
+     \\    } else {
+-    \\        float expand = p.blur_radius * 2.0;
++    \\        float expand = p.blur_radius * 3.0;
+     \\        float2 content_origin = float2(p.bounds_origin_x, p.bounds_origin_y);
+     \\        float2 content_size = float2(p.bounds_size_width, p.bounds_size_height);
+     \\        float2 offset = float2(p.offset_x, p.offset_y);
+@@ -355,7 +395,7 @@ pub const metal_shader_source =
+     \\        float2 shadow_size = content_size + expand * 2.0;
+     \\        float2 pos = shadow_origin + unit * shadow_size;
+     \\        float2 ndc = pos / *viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
+-    \\        float2 local = (unit * shadow_size) - (shadow_size / 2.0) - offset;
++    \\        float2 local = (unit * shadow_size) - (shadow_size / 2.0);
+     \\        out.position = float4(ndc, 0.0, 1.0);
+     \\        out.quad_coord = unit;
+     \\        out.quad_size = shadow_size;
+@@ -403,16 +443,15 @@ pub const metal_shader_source =
+     \\            );
+     \\            float inner_radius = pick_corner_radius(inner_pos, inner_radii);
+     \\            float inner_dist = rounded_rect_sdf(inner_pos, inner_half_size, inner_radius);
+-    \\            float border_blend = smoothstep(-0.5, 0.5, inner_dist);
+-    \\            color = mix(in.color, in.border_color, border_blend);
++    \\            float border_blend = saturate(0.5 + inner_dist / max(fwidth(inner_dist), 1e-4));
++    \\            color = mix_straight(in.color, in.border_color, border_blend);
+     \\        }
+-    \\        float alpha = 1.0 - smoothstep(-0.5, 0.5, outer_dist);
++    \\        float alpha = saturate(0.5 - outer_dist / max(fwidth(outer_dist), 1e-4));
+     \\        return color * float4(1.0, 1.0, 1.0, alpha);
+     \\    } else {
+     \\        float2 half_size = in.content_size / 2.0;
+     \\        float radius = pick_corner_radius(in.local_pos, in.corner_radii);
+-    \\        float dist = rounded_rect_sdf(in.local_pos, half_size, radius);
+-    \\        float alpha = shadow_falloff(dist, in.blur_radius);
++    \\        float alpha = shadow_alpha(in.local_pos, half_size, radius, in.blur_radius);
+     \\        return float4(in.color.rgb, in.color.a * alpha);
+     \\    }
+     \\}
+diff --git a/src/runtime/frame.zig b/src/runtime/frame.zig
+index c747a60..5961915 100644
+--- a/src/runtime/frame.zig
++++ b/src/runtime/frame.zig
+@@ -84,6 +84,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
+     builder.dispatch = window.next_frame.dispatch;
+ 
+     window.beginFrame();
++    const glyph_evictions = window.resources.text_system.cache.evictions;
+ 
+     // App-scoped per-tick hook: drains async image-load results into the
+     // shared atlas and clears stale entity observations from the previous
+@@ -177,10 +178,6 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
+     // Register blur handlers from pending items
+     registerBlurHandlers(window, builder);
+ 
+-    // Render the text widgets (inputs / text areas / code editors) in a
+-    // single tree-ordered pass over the unified control queue (PR 11b.3a).
+-    try renderTextWidgets(window, builder);
+-
+     // Render canvas elements (custom vector graphics)
+     renderCanvasElements(window, builder);
+ 
+@@ -204,6 +201,12 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
+         window.requestRender();
+     }
+ 
++    // A glyph atlas cleared mid-frame wiped glyphs this frame already placed:
++    // draw again, with everything re-rasterized into the fresh atlas.
++    if (window.resources.text_system.cache.evictions != glyph_evictions) {
++        window.requestRender();
++    }
++
+     // Finalize frame timing for profiler
+     window.finalizeFrame();
+ 
+@@ -264,9 +267,19 @@ fn registerBlurHandlers(window: *Window, builder: *const Builder) void {
+     }
+ }
+ 
+-/// Render all layout commands
++/// Render all layout commands. Commands come sorted by z-index; the text
++/// widgets of each level are drawn once its commands are, so a floating box
++/// above covers them (drawn after every command, they showed through).
+ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_mod.RenderCommand) !void {
++    // Text widgets with a z-index up to `flushed` are drawn.
++    var flushed: i16 = std.math.minInt(i16);
++    var level: i16 = if (commands.len > 0) commands[0].z_index else 0;
+     for (commands) |cmd| {
++        if (cmd.z_index != level) {
++            try renderTextWidgets(window, builder, flushed, level);
++            flushed = level;
++            level = cmd.z_index;
++        }
+         // Check if this command's element corresponds to a pending canvas
+         // If so, reserve a draw order now (in correct z-order) for later canvas painting
+         for (builder.pending_canvas.items) |*pending| {
+@@ -291,6 +304,7 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
+             }
+         }
+     }
++    try renderTextWidgets(window, builder, flushed, std.math.maxInt(i16));
+ }
+ 
+ /// Render all pending canvas elements
+@@ -306,13 +320,20 @@ fn renderCanvasElements(window: *Window, builder: *const Builder) void {
+     }
+ }
+ 
+-/// Render every pending text widget in one tree-ordered pass over the unified
+-/// control queue. Each `{ kind, index }` record selects the matching typed
+-/// pool; a comptime `switch (kind)` picks the per-kind render helper (no
++/// Render the pending text widgets whose z-index is in `(above, through]`, in
++/// one tree-ordered pass over the unified control queue. Each `{ kind, index }`
++/// record selects the matching typed pool; a comptime `switch (kind)` picks the per-kind render helper (no
+ /// runtime trait objects). Tree-order replay is correct when widgets of
+ /// different kinds overlap.
+-fn renderTextWidgets(window: *Window, builder: *const Builder) !void {
++fn renderTextWidgets(window: *Window, builder: *const Builder, above: i16, through: i16) !void {
+     for (builder.pending_text_widgets.items) |entry| {
++        const layout_id = switch (entry.kind) {
++            .input => builder.pending_inputs.items[entry.index].layout_id.id,
++            .text_area => builder.pending_text_areas.items[entry.index].layout_id.id,
++            .code_editor => builder.pending_code_editors.items[entry.index].layout_id.id,
++        };
++        const z = window.layout.getZIndex(layout_id);
++        if (z <= above or z > through) continue;
+         switch (entry.kind) {
+             .input => {
+                 std.debug.assert(entry.index < builder.pending_inputs.items.len);
+@@ -403,11 +424,22 @@ fn renderTextArea(window: *Window, pending: *const Builder.PendingTextArea) !voi
+     ta_widget.style.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
+     ta_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
+     ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
++    ta_widget.scrollbar_style.scrollbar_size = pending.style.scrollbar_width;
++    ta_widget.scrollbar_style.track_color = render_bridge.colorToHsla(pending.style.scrollbar_track_color);
++    ta_widget.scrollbar_style.thumb_color = render_bridge.colorToHsla(pending.style.scrollbar_thumb_color);
+     ta_widget.setPlaceholder(pending.style.placeholder);
++    ta_widget.frame_time_us = frameTimeUs(window);
+     try ta_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
++    if (ta_widget.isScrollAnimating()) window.requestRender();
+     if (ta_widget.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
+ }
+ 
++/// When the frame will be presented, on platforms that report it (else 0).
++fn frameTimeUs(window: *Window) i64 {
++    const pw = window.getPlatformWindow() orelse return 0;
++    return if (@hasField(@TypeOf(pw.*), "frame_time_us")) pw.frame_time_us else 0;
++}
++
+ /// Render a single pending code editor.
+ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor) !void {
+     const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse return;
+@@ -423,6 +455,7 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor)
+ 
+     // Update code editor specific settings
+     ce_widget.show_line_numbers = pending.style.show_line_numbers;
++    ce_widget.text_area.soft_wrap = pending.style.soft_wrap;
+     ce_widget.gutter_width = pending.style.gutter_width;
+     ce_widget.tab_size = pending.style.tab_size;
+     ce_widget.use_hard_tabs = pending.style.use_hard_tabs;
+@@ -437,6 +470,10 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor)
+     ce_widget.style.current_line_number_color = render_bridge.colorToHsla(pending.style.current_line_number_color);
+     ce_widget.style.gutter_separator_color = render_bridge.colorToHsla(pending.style.gutter_separator_color);
+     ce_widget.style.current_line_background = render_bridge.colorToHsla(pending.style.current_line_background);
++    ce_widget.text_area.scrollbar_style.scrollbar_size = pending.style.scrollbar_width;
++    ce_widget.text_area.scrollbar_style.scrollbar_padding = pending.style.scrollbar_padding;
++    ce_widget.text_area.scrollbar_style.track_color = render_bridge.colorToHsla(pending.style.scrollbar_track_color);
++    ce_widget.text_area.scrollbar_style.thumb_color = render_bridge.colorToHsla(pending.style.scrollbar_thumb_color);
+ 
+     // Status bar settings
+     ce_widget.show_status_bar = pending.style.show_status_bar;
+@@ -446,9 +483,16 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor)
+     ce_widget.style.status_bar_separator_color = render_bridge.colorToHsla(pending.style.status_bar_separator_color);
+     ce_widget.language_mode = pending.style.language_mode;
+     ce_widget.encoding = pending.style.encoding;
++    ce_widget.highlighter = pending.style.highlighter;
+ 
+     ce_widget.setPlaceholder(pending.style.placeholder);
++    // The editor draws with the secondary (monospace) face when one is loaded.
++    window.resources.text_system.useFont(text_mod.TextSystem.font_id_mono);
++    defer window.resources.text_system.useFont(0);
++    ce_widget.text_area.frame_time_us = frameTimeUs(window);
+     try ce_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
++    // Wheel scrolling eases over several frames; keep them coming until it settles.
++    if (ce_widget.text_area.isScrollAnimating()) window.requestRender();
+     // The editor's caret is its embedded text area's, blink timer included.
+     if (ce_widget.text_area.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
+ }
+diff --git a/src/runtime/input.zig b/src/runtime/input.zig
+index 05afed2..f56ac8b 100644
+--- a/src/runtime/input.zig
++++ b/src/runtime/input.zig
+@@ -106,6 +106,17 @@ pub fn handleInputCx(
+     const window = cx.window();
+     const builder = cx.builder();
+ 
++    if (window.key_capture) |capture| switch (event) {
++        // Mouse presses, drags and wheels too, so the app can claim a region
++        // it draws itself (a terminal, a split's divider).
++        .key_down, .text_input, .scroll, .mouse_down, .mouse_dragged, .mouse_up => if (capture(window, event)) {
++            syncCodeEditorBoundVariablesCx(cx);
++            cx.notify();
++            return true;
++        },
++        else => {},
++    };
++
+     // Route by event type
+     switch (event) {
+         .scroll => |scroll_ev| {
+@@ -131,6 +142,7 @@ pub fn handleInputCx(
+             cx.notify();
+         },
+         .mouse_down => |down_ev| {
++            window.mouse_down = down_ev;
+             if (handleMouseDownEvent(cx, window, builder, down_ev)) return true;
+         },
+         .mouse_up => {
+@@ -200,11 +212,9 @@ fn handleScrollEvent(
+ 
+         const ta = window.element_states.get(TextAreaState, @as(u64, pending.layout_id.id)) orelse continue;
+         if (ta.line_height > 0 and ta.viewport_height > 0) {
+-            const delta_y: f32 = @floatCast(scroll_ev.delta.y);
+-            const content_height: f32 = @as(f32, @floatFromInt(ta.lineCount())) * ta.line_height;
+-            const max_scroll: f32 = @max(0, content_height - ta.viewport_height);
+-            const new_offset = ta.scroll_offset_y - delta_y * 20;
+-            ta.scroll_offset_y = std.math.clamp(new_offset, 0, max_scroll);
++            // Platforms deliver wheel deltas in points (precise trackpad
++            // deltas stay 1:1; a line-based wheel is converted by its backend).
++            ta.scrollBySmooth(@floatCast(scroll_ev.delta.x), @floatCast(scroll_ev.delta.y), scroll_ev.time_us, scroll_ev.precise);
+             cx.notify();
+             return true;
+         }
+@@ -218,11 +228,7 @@ fn handleScrollEvent(
+         const ce = window.element_states.get(CodeEditorState, @as(u64, pending.layout_id.id)) orelse continue;
+         const ta = &ce.text_area;
+         if (ta.line_height > 0 and ta.viewport_height > 0) {
+-            const delta_y: f32 = @floatCast(scroll_ev.delta.y);
+-            const content_height: f32 = @as(f32, @floatFromInt(ta.lineCount())) * ta.line_height;
+-            const max_scroll: f32 = @max(0, content_height - ta.viewport_height);
+-            const new_offset = ta.scroll_offset_y - delta_y * 20;
+-            ta.scroll_offset_y = std.math.clamp(new_offset, 0, max_scroll);
++            ta.scrollBySmooth(@floatCast(scroll_ev.delta.x), @floatCast(scroll_ev.delta.y), scroll_ev.time_us, scroll_ev.precise);
+             cx.notify();
+             return true;
+         }
+@@ -884,10 +890,13 @@ pub fn syncCodeEditorBoundVariablesCx(cx: *Cx) void {
+ 
+ /// Check if a key event should be forwarded to text widgets
+ pub fn isControlKey(key: input_mod.KeyCode, mods: input_mod.Modifiers) bool {
+-    // Forward key events when cmd/ctrl is held (for shortcuts like Cmd+A, Cmd+C, etc.)
+-    if (mods.cmd or mods.ctrl) {
+-        return true;
+-    }
++    // Only the ⌘ keys text widgets use (select all, clipboard, undo, moves and
++    // deletes): any other, like ⌘Q or ⌘H, goes on to the menu bar.
++    if (mods.cmd) return switch (key) {
++        .a, .c, .v, .x, .z, .left, .right, .up, .down, .delete, .forward_delete => true,
++        else => false,
++    };
++    if (mods.ctrl) return true;
+ 
+     return switch (key) {
+         .left,
+diff --git a/src/runtime/multi_window_app.zig b/src/runtime/multi_window_app.zig
+index 2cea27a..cad6efb 100644
+--- a/src/runtime/multi_window_app.zig
++++ b/src/runtime/multi_window_app.zig
+@@ -850,6 +850,7 @@ fn windowOptionsFrom(options: *const AppWindowOptions) WindowOptions {
+         .glass_corner_radius = options.glass_corner_radius,
+         .titlebar_transparent = options.titlebar_transparent,
+         .full_size_content = options.full_size_content,
++        .traffic_light_position = options.traffic_light_position,
+         .custom_shaders = options.custom_shaders,
+     };
+ }
+@@ -979,6 +980,8 @@ pub const AppWindowOptions = struct {
+ 
+     /// Extend content under titlebar
+     full_size_content: bool = false,
++    /// macOS: where the traffic lights sit, from the window's top-left.
++    traffic_light_position: ?geometry.Point(f64) = null,
+ 
+     // Advanced
+ 
+diff --git a/src/runtime/render.zig b/src/runtime/render.zig
+index 326270a..7ffed93 100644
+--- a/src/runtime/render.zig
++++ b/src/runtime/render.zig
+@@ -194,6 +194,8 @@ fn renderBorder(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
+ fn renderText(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
+     const text_data = cmd.data.text;
+     const font_size_f: f32 = @floatFromInt(text_data.font_size);
++    window_ctx.resources.text_system.useFont(text_data.font_id);
++    defer window_ctx.resources.text_system.useFont(0);
+ 
+     // Calculate baseline using requested font size
+     const baseline_y = if (window_ctx.resources.text_system.getMetrics()) |metrics| blk: {
+@@ -359,11 +361,14 @@ fn renderImage(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
+         }
+         if (is_wasm) return; // WASM uses async loading in the `is_wasm` block above
+ 
+-        var decoded = image_mod.loader.loadFromPath(
+-            window_ctx.allocator,
+-            img_data.source,
+-            window_ctx.io,
+-        ) catch return;
++        var decoded = (if (image_mod.loader.findEmbedded(img_data.source)) |data|
++            image_mod.loader.loadFromMemory(window_ctx.allocator, data)
++        else
++            image_mod.loader.loadFromPath(
++                window_ctx.allocator,
++                img_data.source,
++                window_ctx.io,
++            )) catch return;
+         defer decoded.deinit();
+ 
+         break :blk window_ctx.resources.image_atlas.*.cacheImage(key, decoded.toImageData()) catch return;
+diff --git a/src/runtime/runner.zig b/src/runtime/runner.zig
+index 5a1cdf0..90ca1de 100644
+--- a/src/runtime/runner.zig
++++ b/src/runtime/runner.zig
+@@ -221,6 +221,7 @@ fn windowOptions(comptime State: type, config: CxConfig(State)) interface_mod.Wi
+         .glass_corner_radius = config.glass_corner_radius,
+         .titlebar_transparent = config.titlebar_transparent,
+         .full_size_content = config.full_size_content,
++        .traffic_light_position = config.traffic_light_position,
+     };
+ }
+ 
+@@ -287,6 +288,7 @@ pub fn CxConfig(comptime State: type) type {
+ 
+         /// Extend content under titlebar
+         full_size_content: bool = false,
++        traffic_light_position: ?geometry_mod.Point(f64) = null,
+ 
+         /// IO interface for async work (filesystem, network, concurrency).
+         /// When null, falls back to `init.io` (the runtime-selected default
+diff --git a/src/runtime/window_context.zig b/src/runtime/window_context.zig
+index 2f60dd1..10fdb70 100644
+--- a/src/runtime/window_context.zig
++++ b/src/runtime/window_context.zig
+@@ -238,12 +238,9 @@ pub fn WindowContext(comptime State: type) type {
+             // Initialize Window with shared resources (multi-window mode).
+             const window = try allocator.create(Window);
+             errdefer allocator.destroy(window);
+-            window.* = try Window.initWithSharedResources(
+-                allocator,
+-                platform_window,
+-                shared_resources,
+-                io,
+-            );
++            // In place: the a11y bridge points into the window, so a by-value
++            // init would leave it pointing at this stack frame.
++            try window.initWithSharedResourcesPtr(allocator, platform_window, shared_resources, io);
+             // Every window in a multi-window app borrows a pointer to the SAME
+             // `context.App` (embedded by-value inside the parent), which is
+             // what enables cross-window entity observation.
+diff --git a/src/scene/scene.zig b/src/scene/scene.zig
+index 934778e..18fecdb 100644
+--- a/src/scene/scene.zig
++++ b/src/scene/scene.zig
+@@ -993,6 +993,47 @@ pub const Scene = struct {
+         try self.path_gradients.append(self.allocator, GradientUniforms.fromRadial(gradient));
+     }
+ 
++    /// Insert a path instance with a linear gradient fill at a pre-reserved
++    /// draw order; an ordered canvas uses this so its gradient interleaves
++    /// with the rest of the UI instead of landing above it.
++    pub fn insertPathWithLinearGradientOrdered(
++        self: *Self,
++        instance: PathInstance,
++        gradient: LinearGradient,
++        order: DrawOrder,
++        clip: ContentMask.ClipBounds,
++    ) !void {
++        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
++        std.debug.assert(instance.index_count > 0);
++        std.debug.assert(gradient.stop_count >= 2);
++
++        var inst = instance.withClipBounds(clip);
++        inst.order = order;
++        self.needs_sort_paths = true; // Out-of-order insert requires sorting
++        try self.path_instances.append(self.allocator, inst);
++        try self.path_gradients.append(self.allocator, GradientUniforms.fromLinear(gradient));
++    }
++
++    /// Insert a path instance with a radial gradient fill at a pre-reserved
++    /// draw order (see `insertPathWithLinearGradientOrdered`).
++    pub fn insertPathWithRadialGradientOrdered(
++        self: *Self,
++        instance: PathInstance,
++        gradient: RadialGradient,
++        order: DrawOrder,
++        clip: ContentMask.ClipBounds,
++    ) !void {
++        std.debug.assert(self.path_instances.items.len < MAX_PATHS_PER_FRAME);
++        std.debug.assert(instance.index_count > 0);
++        std.debug.assert(gradient.stop_count >= 2);
++
++        var inst = instance.withClipBounds(clip);
++        inst.order = order;
++        self.needs_sort_paths = true; // Out-of-order insert requires sorting
++        try self.path_instances.append(self.allocator, inst);
++        try self.path_gradients.append(self.allocator, GradientUniforms.fromRadial(gradient));
++    }
++
+     /// Insert a path with a mesh, allocating the mesh in the frame pool
+     /// This is a convenience method that handles mesh allocation
+     pub fn insertPathWithMesh(
+diff --git a/src/svg/atlas.zig b/src/svg/atlas.zig
+index 3847315..147b1f4 100644
+--- a/src/svg/atlas.zig
++++ b/src/svg/atlas.zig
+@@ -135,10 +135,7 @@ pub const SvgAtlas = struct {
+     }
+ 
+     pub fn setScaleFactor(self: *Self, scale: f32) void {
+-        if (self.scale_factor != scale) {
+-            self.scale_factor = scale;
+-            self.clear();
+-        }
++        self.scale_factor = scale; // keys carry the device size: no clear
+     }
+ 
+     // =========================================================================
+diff --git a/src/text/atlas.zig b/src/text/atlas.zig
+index b5880fc..799c639 100644
+--- a/src/text/atlas.zig
++++ b/src/text/atlas.zig
+@@ -97,8 +97,9 @@ pub const Atlas = struct {
+     pub const INITIAL_SIZE: u32 = 512;
+     /// Maximum atlas size
+     pub const MAX_SIZE: u32 = 4096;
+-    /// Maximum skyline nodes (sufficient for 4096x4096 atlas with small glyphs)
+-    pub const MAX_SKYLINE_NODES: usize = 128;
++    /// Maximum skyline nodes: about one per glyph column, so a 4096-wide atlas of
++    /// small 2x glyphs needs several hundred (128 cleared the atlas mid-frame).
++    pub const MAX_SKYLINE_NODES: usize = 1024;
+ 
+     pub fn init(allocator: std.mem.Allocator, format: Format) !Self {
+         return initWithSize(allocator, format, INITIAL_SIZE);
+diff --git a/src/text/backends/coretext/bindings.zig b/src/text/backends/coretext/bindings.zig
+index fd02aeb..fbce53a 100644
+--- a/src/text/backends/coretext/bindings.zig
++++ b/src/text/backends/coretext/bindings.zig
+@@ -210,6 +210,9 @@ pub extern "c" fn CTFontCreateWithName(
+     matrix: ?*const CGAffineTransform,
+ ) ?CTFontRef;
+ 
++pub extern "c" fn CFDataCreate(allocator: CFAllocatorRef, bytes: [*]const u8, length: CFIndex) ?CFDataRef;
++pub extern "c" fn CTFontManagerCreateFontDescriptorFromData(data: CFDataRef) ?CTFontDescriptorRef;
++
+ pub extern "c" fn CTFontCreateWithFontDescriptor(
+     descriptor: CTFontDescriptorRef,
+     size: CGFloat,
+diff --git a/src/text/backends/coretext/face.zig b/src/text/backends/coretext/face.zig
+index cb264b8..f78ed3b 100644
+--- a/src/text/backends/coretext/face.zig
++++ b/src/text/backends/coretext/face.zig
+@@ -22,6 +22,15 @@ pub const CoreTextFace = struct {
+ 
+     const Self = @This();
+ 
++    /// GPUI (via font-kit) loads every face at 16pt and derives other sizes by
++    /// copying it, which pins variable fonts' optical size; mirror that.
++    const load_size: ct.CGFloat = 16;
++
++    fn resized(font: ct.CTFontRef, size: f32) !ct.CTFontRef {
++        std.debug.assert(size > 0);
++        return ct.CTFontCreateCopyWithAttributes(font, @floatCast(size), null, null) orelse error.FontError;
++    }
++
+     /// Load a font by name (e.g., "SF Mono", "SF Pro", "Helvetica Neue")
+     pub fn init(name: []const u8, size: f32) !Self {
+         std.debug.assert(size > 0);
+@@ -30,8 +39,29 @@ pub const CoreTextFace = struct {
+         const cf_name = ct.createCFStringRuntime(name) orelse return error.InvalidFontName;
+         defer ct.release(cf_name);
+ 
+-        const font = ct.CTFontCreateWithName(cf_name, @floatCast(size), null) orelse
++        const base = ct.CTFontCreateWithName(cf_name, load_size, null) orelse
+             return error.FontNotFound;
++        defer ct.release(base);
++        const font = try resized(base, size);
++
++        return Self{
++            .ct_font = font,
++            .metrics = computeMetrics(font, size),
++        };
++    }
++
++    /// Load a font from in-memory font file bytes (e.g. an embedded .ttf).
++    pub fn initFromData(data: []const u8, size: f32) !Self {
++        std.debug.assert(size > 0);
++        std.debug.assert(data.len > 0);
++
++        const cf_data = ct.CFDataCreate(null, data.ptr, @intCast(data.len)) orelse return error.FontError;
++        defer ct.release(cf_data);
++        const descriptor = ct.CTFontManagerCreateFontDescriptorFromData(cf_data) orelse return error.InvalidFontData;
++        defer ct.release(descriptor);
++        const base = ct.CTFontCreateWithFontDescriptor(descriptor, load_size, null) orelse return error.FontNotFound;
++        defer ct.release(base);
++        const font = try resized(base, size);
+ 
+         return Self{
+             .ct_font = font,
+@@ -46,12 +76,13 @@ pub const CoreTextFace = struct {
+         const font = switch (style) {
+             .monospace => blk: {
+                 // Use system API for monospace - SF Mono needs this to work correctly
+-                const f = ct.CTFontCreateUIFontForLanguage(
++                const base = ct.CTFontCreateUIFontForLanguage(
+                     ct.kCTFontUIFontUserFixedPitch,
+-                    @floatCast(size),
++                    load_size,
+                     null,
+                 ) orelse return error.FontNotFound;
+-                break :blk f;
++                defer ct.release(base);
++                break :blk try resized(base, size);
+             },
+             else => blk: {
+                 const name = switch (style) {
+@@ -62,8 +93,10 @@ pub const CoreTextFace = struct {
+                 };
+                 const cf_name = ct.createCFStringRuntime(name) orelse return error.InvalidFontName;
+                 defer ct.release(cf_name);
+-                break :blk ct.CTFontCreateWithName(cf_name, @floatCast(size), null) orelse
++                const base = ct.CTFontCreateWithName(cf_name, load_size, null) orelse
+                     return error.FontNotFound;
++                defer ct.release(base);
++                break :blk try resized(base, size);
+             },
+         };
+ 
+@@ -256,6 +289,11 @@ fn getGlyphMetricsFromFont(ct_font: ct.CTFontRef, glyph_id: u16) GlyphMetrics {
+     };
+ }
+ 
++/// CoreGraphics font-smoothing dilation level (0-4) for the next rasterized
++/// glyph, derived from the text color like GPUI does. Set by the glyph cache
++/// under its mutex, right before rendering.
++pub var glyph_dilation: u8 = 0;
++
+ /// Internal glyph rendering implementation shared by both public methods
+ /// Renders a glyph from any CTFontRef with subpixel positioning
+ fn renderGlyphInternal(
+@@ -274,16 +312,23 @@ fn renderGlyphInternal(
+     std.debug.assert(buffer.len >= buffer_size);
+ 
+     // Create scaled font first - we need metrics at the target size
+-    const scaled_font = ct.CTFontCreateCopyWithAttributes(
+-        ct_font,
+-        font_size * scale,
+-        null,
+-        null,
+-    ) orelse return error.FontError;
+-    defer ct.release(scaled_font);
+-
+-    // Get metrics from the scaled font so bounds are correct for the target size
+-    const glyph_metrics = getGlyphMetricsFromFont(scaled_font, glyph_id);
++    // Like GPUI: the font stays at the logical size and the CTM carries the
++    // backing scale, so the optical size matches the laid-out text.
++    const sized_font = ct.CTFontCreateCopyWithAttributes(ct_font, font_size, null, null) orelse
++        return error.FontError;
++    defer ct.release(sized_font);
++
++    // Bounds in physical pixels.
++    const logical = getGlyphMetricsFromFont(sized_font, glyph_id);
++    const glyph_metrics = GlyphMetrics{
++        .glyph_id = glyph_id,
++        .advance_x = logical.advance_x * scale,
++        .advance_y = logical.advance_y * scale,
++        .bearing_x = logical.bearing_x * scale,
++        .bearing_y = logical.bearing_y * scale,
++        .width = logical.width * scale,
++        .height = logical.height * scale,
++    };
+     const padding: u32 = 2;
+     const padding_f: f32 = @floatFromInt(padding);
+ 
+@@ -322,26 +367,27 @@ fn renderGlyphInternal(
+     std.debug.assert(clamped_h > 0);
+ 
+     // Create CoreGraphics context
+-    const color_space = ct.CGColorSpaceCreateDeviceGray() orelse return error.GraphicsError;
+-    defer ct.CGColorSpaceRelease(color_space);
+-
+     const context = ct.CGBitmapContextCreate(
+         buffer.ptr,
+         clamped_w,
+         clamped_h,
+         8,
+         clamped_w,
+-        color_space,
+-        ct.kCGImageAlphaNone,
++        null,
++        ct.kCGImageAlphaOnly,
+     ) orelse return error.GraphicsError;
+     defer ct.CGContextRelease(context);
+ 
+     // Configure rendering for quality
+     ct.CGContextSetAllowsAntialiasing(context, true);
+     ct.CGContextSetShouldAntialias(context, true);
++    // Coverage lands in the alpha channel; the fill's luminance only picks how
++    // much CoreGraphics thickens strokes when smoothing (GPUI's dilation).
++    // Like GPUI, smoothing stays on at level 0, just with a black fill.
++    std.debug.assert(glyph_dilation <= 4);
+     ct.CGContextSetAllowsFontSmoothing(context, true);
+     ct.CGContextSetShouldSmoothFonts(context, true);
+-    ct.CGContextSetGrayFillColor(context, 1.0, 1.0);
++    ct.CGContextSetGrayFillColor(context, @as(f64, @floatFromInt(glyph_dilation)) * 0.25, 1.0);
+     ct.CGContextSetAllowsFontSubpixelPositioning(context, true);
+     ct.CGContextSetShouldSubpixelPositionFonts(context, true);
+     ct.CGContextSetAllowsFontSubpixelQuantization(context, false);
+@@ -354,12 +400,13 @@ fn renderGlyphInternal(
+         -raster_left + padding_f + subpixel_x,
+         -raster_bottom + padding_f + subpixel_y,
+     );
++    ct.CGContextScaleCTM(context, scale, scale);
+     ct.CGContextSetTextMatrix(context, ct.CGAffineTransform.identity);
+ 
+     // Draw glyph at origin - the context translation positions it correctly
+     var glyph = glyph_id;
+     const position = ct.CGPoint{ .x = 0, .y = 0 };
+-    ct.CTFontDrawGlyphs(scaled_font, @ptrCast(&glyph), @ptrCast(&position), 1, context);
++    ct.CTFontDrawGlyphs(sized_font, @ptrCast(&glyph), @ptrCast(&position), 1, context);
+ 
+     // Return offsets directly from font metrics - no bitmap scanning needed
+     // offset_x: where to place bitmap left edge relative to pen (physical pixels)
+diff --git a/src/text/cache.zig b/src/text/cache.zig
+index 5160478..7c3e6c9 100644
+--- a/src/text/cache.zig
++++ b/src/text/cache.zig
+@@ -37,6 +37,8 @@ pub const GlyphKey = struct {
+     subpixel_x: u8,
+     /// Subpixel Y variant (0 to SUBPIXEL_VARIANTS_Y - 1)
+     subpixel_y: u8,
++    /// Font-smoothing dilation level (0-4), see `GlyphCache.dilation`.
++    dilation: u8 = 0,
+ 
+     pub inline fn init(face: FontFace, glyph_id: u16, font_size: f32, scale: f32, subpixel_x: u8, subpixel_y: u8) GlyphKey {
+         return .{
+@@ -73,7 +75,8 @@ pub const GlyphKey = struct {
+             (@as(u64, self.size_fixed) << 16) |
+             (@as(u64, self.scale_fixed) << 32) |
+             (@as(u64, self.subpixel_x) << 40) |
+-            (@as(u64, self.subpixel_y) << 48);
++            (@as(u64, self.subpixel_y) << 48) |
++            (@as(u64, self.dilation) << 56);
+ 
+         // Convert to u64 for platform independence (wasm32 has 32-bit usize).
+         const ptr_u64: u64 = @intCast(self.font_ptr);
+@@ -94,7 +97,8 @@ pub const GlyphKey = struct {
+             a.size_fixed == b.size_fixed and
+             a.scale_fixed == b.scale_fixed and
+             a.subpixel_x == b.subpixel_x and
+-            a.subpixel_y == b.subpixel_y;
++            a.subpixel_y == b.subpixel_y and
++            a.dilation == b.dilation;
+     }
+ };
+ 
+@@ -131,6 +135,9 @@ const GlyphEntry = struct {
+ /// Glyph cache with atlas management - fixed capacity, zero runtime allocation
+ pub const GlyphCache = struct {
+     allocator: std.mem.Allocator,
++    /// Font-smoothing dilation level (0-4) for glyphs looked up next. Part of
++    /// every key, so one glyph can be cached at several stroke weights.
++    dilation: u8 = 0,
+ 
+     /// Fixed-capacity glyph storage
+     entries: [MAX_CACHED_GLYPHS]GlyphEntry,
+@@ -141,7 +148,7 @@ pub const GlyphCache = struct {
+ 
+     /// Intrusive free list threaded through entries array.
+     /// Each element stores the index of the next free slot, or EMPTY_SLOT for end-of-list.
+-    /// Separate array avoids union gymnastics in GlyphEntry — 8 KB (4096 × 2 bytes).
++    /// Separate array avoids union gymnastics in GlyphEntry — 16 KB (8192 × 2 bytes).
+     ///
+     /// INVARIANT: Any code path that sets `entry.valid = false` on an individual entry
+     /// MUST push that entry's index back onto this free list (set `free_chain[idx] =
+@@ -159,12 +166,16 @@ pub const GlyphCache = struct {
+     render_buffer: []u8,
+     render_buffer_size: u32,
+     scale_factor: f32,
++    /// Times the atlas was cleared to make room. A clear mid-frame leaves the
++    /// glyphs already placed this frame pointing at wiped or reused pixels, so
++    /// the frame driver redraws when this changes.
++    evictions: u32 = 0,
+ 
+     const Self = @This();
+ 
+     // Capacity limits
+-    pub const MAX_CACHED_GLYPHS: usize = 4096;
+-    const HASH_TABLE_SIZE: usize = 8192; // 2x entries for low collision rate
++    pub const MAX_CACHED_GLYPHS: usize = 8192;
++    const HASH_TABLE_SIZE: usize = 16384; // 2x entries for low collision rate
+     const MAX_PROBE_LENGTH: usize = 64;
+     const EMPTY_SLOT: u16 = 0xFFFF;
+     const RENDER_BUFFER_SIZE: u32 = 256; // Max glyph size
+@@ -223,6 +234,8 @@ pub const GlyphCache = struct {
+         @memset(render_buffer, 0);
+ 
+         self.allocator = allocator;
++        self.dilation = 0;
++        self.evictions = 0;
+         self.entry_count = 0;
+         self.render_buffer = render_buffer;
+         self.render_buffer_size = buffer_bytes;
+@@ -251,10 +264,7 @@ pub const GlyphCache = struct {
+         std.debug.assert(scale > 0);
+         std.debug.assert(scale <= 4.0);
+ 
+-        if (self.scale_factor != scale) {
+-            self.scale_factor = scale;
+-            self.clear();
+-        }
++        self.scale_factor = scale; // keys carry the scale: no clear
+     }
+ 
+     pub fn deinit(self: *Self) void {
+@@ -311,8 +321,12 @@ pub const GlyphCache = struct {
+         std.debug.assert(self.entry_count <= MAX_CACHED_GLYPHS);
+ 
+         // Pop the head of the free list — O(1) instead of O(N) linear scan.
++        // Full: start over. Dropping the entry instead re-rasterized it into new
++        // atlas space every frame until the atlas overflowed. The glyph was just
++        // placed in the atlas, so it is lost too: the frame driver redraws.
+         if (self.next_free == EMPTY_SLOT) {
+-            return; // Cache full (atlas eviction handles this case).
++            self.clear();
++            return;
+         }
+ 
+         const idx = self.next_free;
+@@ -422,6 +436,12 @@ pub const GlyphCache = struct {
+         }
+     }
+ 
++    /// Hand the current dilation to the CoreText rasterizer.
++    inline fn applyDilation(self: *const Self) void {
++        std.debug.assert(self.dilation <= 4);
++        if (!is_wasm and !is_linux) @import("backends/coretext/face.zig").glyph_dilation = self.dilation;
++    }
++
+     /// Get a cached glyph with subpixel variant, or render and cache it
+     pub inline fn getOrRenderSubpixel(
+         self: *Self,
+@@ -431,7 +451,9 @@ pub const GlyphCache = struct {
+         subpixel_x: u8,
+         subpixel_y: u8,
+     ) !CachedGlyph {
+-        const key = GlyphKey.init(face, glyph_id, font_size, self.scale_factor, subpixel_x, subpixel_y);
++        var key = GlyphKey.init(face, glyph_id, font_size, self.scale_factor, subpixel_x, subpixel_y);
++        key.dilation = self.dilation;
++        self.applyDilation();
+ 
+         if (self.getFromCache(key)) |cached| {
+             return cached;
+@@ -510,7 +532,7 @@ pub const GlyphCache = struct {
+         subpixel_x: u8,
+         subpixel_y: u8,
+     ) !CachedGlyph {
+-        const key = GlyphKey.initWithFontPtr(
++        var key = GlyphKey.initWithFontPtr(
+             @intFromPtr(font_ptr),
+             glyph_id,
+             font_size,
+@@ -518,6 +540,8 @@ pub const GlyphCache = struct {
+             subpixel_x,
+             subpixel_y,
+         );
++        key.dilation = self.dilation;
++        self.applyDilation();
+ 
+         if (self.getFromCache(key)) |cached| {
+             return cached;
+@@ -618,6 +642,7 @@ pub const GlyphCache = struct {
+ 
+         self.entry_count = 0;
+         self.grayscale_atlas.clear();
++        self.evictions +%= 1;
+ 
+         // Rebuild the free list so every slot is available again.
+         self.initFreeList();
+diff --git a/src/text/render.zig b/src/text/render.zig
+index b7cd383..21d5687 100644
+--- a/src/text/render.zig
++++ b/src/text/render.zig
+@@ -80,6 +80,15 @@ pub const RenderTextOptions = struct {
+ ///
+ /// Glyph cache lookups are batched under a single mutex lock (Phase 2),
+ /// eliminating N-1 lock/unlock pairs for an N-glyph text run.
++/// CoreGraphics thickens smoothed glyphs by an amount that depends on the
++/// fill luminance; GPUI replicates its five levels. Dark text gets little or none.
++fn dilationFor(color: Hsla) u8 {
++    const c = color.toColor();
++    const luminance = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
++    std.debug.assert(luminance >= 0 and luminance <= 1.001);
++    return @intFromFloat(@min(4.0, @floor(4.0 * luminance + 0.5)));
++}
++
+ pub fn renderText(
+     scene: *Scene,
+     text_system: *TextSystem,
+@@ -110,10 +119,45 @@ pub fn renderText(
+     defer if (shaped.owned) shaped.deinit(text_system.allocator);
+ 
+     const scaled_width = shaped.width * size_scale;
+-    const glyph_count = shaped.glyphs.len;
++    if (shaped.glyphs.len == 0) return scaled_width;
++
++    // A run longer than the stack buffers (an owned, uncached shape) is drawn
++    // in chunks, the pen carried from one to the next.
++    text_system.glyph_dilation = dilationFor(color);
++    var pen_x = x;
++    var rest = shaped.glyphs;
++    while (rest.len > 0) {
++        const chunk = rest[0..@min(rest.len, MAX_GLYPHS_PER_RUN)];
++        rest = rest[chunk.len..];
++        try renderChunk(scene, text_system, chunk, pen_x, baseline_y, size_scale, scale_factor, color, font_size, options);
++        for (chunk) |g| pen_x += g.x_advance * size_scale;
++    }
++
++    // Render decorations (underline, strikethrough) if requested.
++    if (options.decoration.hasAny()) {
++        if (text_system.getMetrics()) |metrics| {
++            try renderDecorations(scene, metrics, x, baseline_y, scaled_width, color, options);
++        }
++    }
+ 
+-    if (glyph_count == 0) return scaled_width;
+-    std.debug.assert(glyph_count <= MAX_GLYPHS_PER_RUN);
++    return scaled_width;
++}
++
++/// Positions, resolves and emits up to `MAX_GLYPHS_PER_RUN` glyphs starting at `x`.
++fn renderChunk(
++    scene: *Scene,
++    text_system: *TextSystem,
++    glyphs: []const ShapedGlyph,
++    x: f32,
++    baseline_y: f32,
++    size_scale: f32,
++    scale_factor: f32,
++    color: Hsla,
++    font_size: f32,
++    options: *RenderTextOptions,
++) !void {
++    const glyph_count = glyphs.len;
++    std.debug.assert(glyph_count > 0 and glyph_count <= MAX_GLYPHS_PER_RUN);
+ 
+     // Phase 1: Compute device-pixel positions and subpixel offsets (no lock).
+     var device_positions_x: [MAX_GLYPHS_PER_RUN]f32 = undefined;
+@@ -121,7 +165,7 @@ pub fn renderText(
+     var subpixel_offsets_x: [MAX_GLYPHS_PER_RUN]u8 = undefined;
+ 
+     computeGlyphDevicePositions(
+-        shaped.glyphs,
++        glyphs,
+         x,
+         baseline_y,
+         size_scale,
+@@ -136,7 +180,7 @@ pub fn renderText(
+     var cached_results: [MAX_GLYPHS_PER_RUN]CachedGlyph = undefined;
+ 
+     try text_system.resolveGlyphBatch(
+-        shaped.glyphs,
++        glyphs,
+         font_size,
+         subpixel_offsets_x[0..glyph_count],
+         cached_results[0..glyph_count],
+@@ -152,15 +196,6 @@ pub fn renderText(
+         color,
+         options,
+     );
+-
+-    // Render decorations (underline, strikethrough) if requested.
+-    if (options.decoration.hasAny()) {
+-        if (text_system.getMetrics()) |metrics| {
+-            try renderDecorations(scene, metrics, x, baseline_y, scaled_width, color, options);
+-        }
+-    }
+-
+-    return scaled_width;
+ }
+ 
+ // =============================================================================
+@@ -197,17 +232,30 @@ fn computeGlyphDevicePositions(
+         const device_x = (pen_x + scaled_x_offset) * scale_factor;
+         const device_y = (baseline_y + scaled_y_offset) * scale_factor;
+ 
+-        // Extract fractional part for subpixel variant selection.
+-        const fractional_x = device_x - @floor(device_x);
++        // Quantize like GPUI: x to the nearest quarter pixel, y to the nearest pixel.
++        const qx = quantizeAxis(device_x, SUBPIXEL_VARIANTS_F);
++        const qy = quantizeAxis(device_y, 1);
+ 
+-        out_device_x[index] = device_x;
+-        out_device_y[index] = device_y;
+-        out_subpixel_x[index] = @intFromFloat(@floor(fractional_x * SUBPIXEL_VARIANTS_F));
++        out_device_x[index] = qx.whole;
++        out_device_y[index] = qy.whole;
++        out_subpixel_x[index] = qx.variant;
+ 
+         pen_x += scaled_advance;
+     }
+ }
+ 
++/// GPUI's `quantize_axis`: the whole pixel at or below `value` plus the nearest
++/// of `variants` steps within it, ties toward the pixel; the last step carries.
++fn quantizeAxis(value: f32, variants: f32) struct { whole: f32, variant: u8 } {
++    std.debug.assert(variants >= 1);
++    std.debug.assert(variants <= SUBPIXEL_VARIANTS_F);
++
++    const whole = @floor(value);
++    const steps = @ceil((value - whole) * variants - 0.5);
++    const carry = @floor(steps / variants);
++    return .{ .whole = whole + carry, .variant = @intFromFloat(steps - carry * variants) };
++}
++
+ // =============================================================================
+ // Phase 3: Scene Emission
+ // =============================================================================
+diff --git a/src/text/text_system.zig b/src/text/text_system.zig
+index 8121828..69b60db 100644
+--- a/src/text/text_system.zig
++++ b/src/text/text_system.zig
+@@ -692,6 +692,13 @@ pub const TextSystem = struct {
+     cache: cache_mod.GlyphCache,
+     /// Current font face (platform-specific)
+     current_face: ?PlatformFace,
++    /// Optional extra faces, selected with `useFont(id)`; `font_id_mono` and
++    /// `font_id_bold` index this array minus one.
++    extra_faces: [2]?PlatformFace = .{ null, null },
++    /// Font id the shaping/measuring paths currently use (0 = primary, 1 = mono, 2 = bold).
++    active_font: u16 = 0,
++    /// Dilation level for glyphs resolved next, set from the text color.
++    glyph_dilation: u8 = 0,
+     /// Complex shaper (native only, void on web)
+     shaper: ?PlatformShaper,
+     scale_factor: f32,
+@@ -730,6 +737,8 @@ pub const TextSystem = struct {
+             .allocator = allocator,
+             .cache = try cache_mod.GlyphCache.init(allocator, scale),
+             .current_face = null,
++            .extra_faces = .{ null, null },
++            .active_font = 0,
+             .shaper = null,
+             .scale_factor = scale,
+             .shape_cache = ShapedRunCache.init(),
+@@ -750,6 +759,9 @@ pub const TextSystem = struct {
+ 
+         self.allocator = allocator;
+         self.current_face = null;
++        self.extra_faces = .{ null, null };
++        self.active_font = 0;
++        self.glyph_dilation = 0;
+         self.shaper = null;
+         self.scale_factor = scale;
+         self.io = io;
+@@ -772,6 +784,7 @@ pub const TextSystem = struct {
+ 
+     pub fn deinit(self: *Self) void {
+         if (self.current_face) |*f| f.deinit();
++        for (&self.extra_faces) |*slot| if (slot.*) |*f| f.deinit();
+         if (self.shaper) |*s| s.deinit();
+         self.cache.deinit();
+         self.shape_cache.deinit();
+@@ -806,15 +819,67 @@ pub const TextSystem = struct {
+         self.measure_cache.current_font_ptr = 0;
+     }
+ 
++    pub const font_id_mono: u16 = 1;
++    /// Text styled semibold or bolder (`ui.TextStyle.weight`) uses this face once loaded.
++    pub const font_id_bold: u16 = 2;
++
++    /// Load an extra face for `font_id` from font file bytes. Like `loadFont`,
++    /// this clears the glyph cache, so repeated reloads (e.g. zooming) never
++    /// fill the atlas and force an eviction in the middle of a frame.
++    pub fn loadExtraFontData(self: *Self, font_id: u16, data: []const u8, size: f32) !void {
++        std.debug.assert(font_id >= 1 and font_id <= self.extra_faces.len);
++        std.debug.assert(size > 0 and size < 1000);
++        std.debug.assert(self.active_font == 0);
++
++        self.setExtraFace(font_id, try PlatformFace.initFromData(data, size));
++    }
++
++    /// Load an extra face for `font_id` by font name (e.g. ".AppleSystemUIFontDemi").
++    pub fn loadExtraFont(self: *Self, font_id: u16, name: []const u8, size: f32) !void {
++        std.debug.assert(font_id >= 1 and font_id <= self.extra_faces.len);
++        std.debug.assert(self.active_font == 0);
++        self.setExtraFace(font_id, try PlatformFace.init(name, size));
++    }
++
++    fn setExtraFace(self: *Self, font_id: u16, face: PlatformFace) void {
++        const slot = &self.extra_faces[font_id - 1];
++        if (slot.*) |*f| f.deinit();
++        slot.* = face;
++
++        self.glyph_cache_mutex.lockUncancelable(self.io);
++        defer self.glyph_cache_mutex.unlock(self.io);
++        self.cache.clear();
++        // Shaped runs key on the slot's address, which outlives its face: a
++        // different font in the slot would reuse the old glyph ids (see `loadFont`).
++        self.shape_cache_mutex.lockUncancelable(self.io);
++        defer self.shape_cache_mutex.unlock(self.io);
++        self.shape_cache.current_font_ptr = 0;
++        self.measure_cache.current_font_ptr = 0;
++    }
++
++    /// Select the face used by shaping, measuring and metrics. Ids without a
++    /// loaded face fall back to the primary face.
++    pub fn useFont(self: *Self, font_id: u16) void {
++        std.debug.assert(font_id <= self.extra_faces.len);
++        self.active_font = font_id;
++    }
++
++    /// The active face slot. Its address keys the shape and glyph caches.
++    inline fn activeFace(self: anytype) @TypeOf(&self.current_face) {
++        if (self.active_font > 0 and self.extra_faces[self.active_font - 1] != null)
++            return &self.extra_faces[self.active_font - 1];
++        return &self.current_face;
++    }
++
+     /// Get current font metrics
+     pub inline fn getMetrics(self: *const Self) ?Metrics {
+-        if (self.current_face) |f| return f.metrics;
++        if (self.activeFace().*) |f| return f.metrics;
+         return null;
+     }
+ 
+     /// Get the FontFace interface for the current font
+     pub inline fn getFontFace(self: *Self) !FontFace {
+-        if (self.current_face) |*f| {
++        if (self.activeFace().*) |*f| {
+             return f.asFontFace();
+         }
+         return error.NoFontLoaded;
+@@ -825,11 +890,11 @@ pub const TextSystem = struct {
+     pub fn shapeText(self: *Self, text: []const u8, stats: ?*RenderStats) !ShapedRun {
+         std.debug.assert(text.len > 0);
+ 
+-        const face = self.current_face orelse return error.NoFontLoaded;
++        const face = self.activeFace().* orelse return error.NoFontLoaded;
+ 
+         std.debug.assert(face.metrics.point_size > 0);
+ 
+-        const font_ptr = @intFromPtr(&self.current_face);
++        const font_ptr = @intFromPtr(self.activeFace());
+         const use_cache = text.len <= ShapedRunCache.MAX_TEXT_LEN;
+ 
+         // Build the key once, reuse for lookup and store.
+@@ -842,7 +907,7 @@ pub const TextSystem = struct {
+             self.shape_cache_mutex.lockUncancelable(self.io);
+             defer self.shape_cache_mutex.unlock(self.io);
+ 
+-            self.shape_cache.checkFont(font_ptr);
++            self.shape_cache.checkFont(@intFromPtr(&self.current_face));
+ 
+             if (self.shape_cache.get(cache_key)) |cached_run| {
+                 if (stats) |s| s.recordShapeCacheHit();
+@@ -914,11 +979,11 @@ pub const TextSystem = struct {
+         std.debug.assert(text.len > 0);
+         std.debug.assert(out_glyphs.len > 0);
+ 
+-        const face = self.current_face orelse return error.NoFontLoaded;
++        const face = self.activeFace().* orelse return error.NoFontLoaded;
+ 
+         std.debug.assert(face.metrics.point_size > 0);
+ 
+-        const font_ptr = @intFromPtr(&self.current_face);
++        const font_ptr = @intFromPtr(self.activeFace());
+         const use_cache = text.len <= ShapedRunCache.MAX_TEXT_LEN;
+ 
+         // Warm path: copy cached glyphs into caller's buffer — zero heap allocation.
+@@ -928,7 +993,7 @@ pub const TextSystem = struct {
+             self.shape_cache_mutex.lockUncancelable(self.io);
+             defer self.shape_cache_mutex.unlock(self.io);
+ 
+-            self.shape_cache.checkFont(font_ptr);
++            self.shape_cache.checkFont(@intFromPtr(&self.current_face));
+ 
+             if (self.shape_cache.get(cache_key)) |cached_run| {
+                 if (stats) |s| s.recordShapeCacheHit();
+@@ -974,7 +1039,7 @@ pub const TextSystem = struct {
+         if (is_wasm) {
+             // Web optimization: single JS call to measure entire string.
+             // This avoids N boundary crossings for N characters.
+-            const face = self.current_face orelse return error.NoFontLoaded;
++            const face = self.activeFace().* orelse return error.NoFontLoaded;
+             const font_name = face.font_name_buf[0..face.font_name_len];
+             const web_imports = @import("../platform/web/imports.zig");
+             return web_imports.measureText(
+@@ -987,7 +1052,7 @@ pub const TextSystem = struct {
+         } else {
+             if (text.len == 0) return 0;
+ 
+-            const face = self.current_face orelse return error.NoFontLoaded;
++            const face = self.activeFace().* orelse return error.NoFontLoaded;
+             std.debug.assert(face.metrics.point_size > 0);
+ 
+             // Text past MAX_TEXT_LEN cannot even be keyed -- `hashText` asserts
+@@ -999,7 +1064,7 @@ pub const TextSystem = struct {
+                 return shaped_long.width;
+             }
+ 
+-            const font_ptr = @intFromPtr(&self.current_face);
++            const font_ptr = @intFromPtr(self.activeFace());
+             const cache_key = ShapedRunKey.init(text, font_ptr, face.metrics.point_size);
+ 
+             // Fast path: both caches are read under the same mutex, and only the
+@@ -1008,8 +1073,8 @@ pub const TextSystem = struct {
+                 self.shape_cache_mutex.lockUncancelable(self.io);
+                 defer self.shape_cache_mutex.unlock(self.io);
+ 
+-                self.measure_cache.checkFont(font_ptr);
+-                self.shape_cache.checkFont(font_ptr);
++                self.measure_cache.checkFont(@intFromPtr(&self.current_face));
++                self.shape_cache.checkFont(@intFromPtr(&self.current_face));
+ 
+                 if (self.measure_cache.get(cache_key)) |cached_width| {
+                     std.debug.assert(cached_width >= 0);
+@@ -1064,13 +1129,13 @@ pub const TextSystem = struct {
+         // The cache entry is valid while the mutex is held; we iterate the
+         // glyph slice in-place and never let a pointer escape the lock scope.
+         if (text.len > 0 and text.len <= ShapedRunCache.MAX_TEXT_LEN) {
+-            const font_ptr = @intFromPtr(&self.current_face);
++            const font_ptr = @intFromPtr(self.activeFace());
+             const cache_key = ShapedRunKey.init(text, font_ptr, face.metrics.point_size);
+ 
+             self.shape_cache_mutex.lockUncancelable(self.io);
+             defer self.shape_cache_mutex.unlock(self.io);
+ 
+-            self.shape_cache.checkFont(font_ptr);
++            self.shape_cache.checkFont(@intFromPtr(&self.current_face));
+ 
+             if (self.shape_cache.get(cache_key)) |cached_run| {
+                 std.debug.assert(cached_run.width >= 0);
+@@ -1129,6 +1194,7 @@ pub const TextSystem = struct {
+ 
+         self.glyph_cache_mutex.lockUncancelable(self.io);
+         defer self.glyph_cache_mutex.unlock(self.io);
++        self.cache.dilation = self.glyph_dilation;
+ 
+         for (0..glyphs.len) |i| {
+             if (glyphs[i].font_ref) |fallback_font| {
+diff --git a/src/ui/builder.zig b/src/ui/builder.zig
+index fdcfb4f..0d6b722 100644
+--- a/src/ui/builder.zig
++++ b/src/ui/builder.zig
+@@ -1317,6 +1317,12 @@ pub const Builder = struct {
+         self.layout.text(txt.content, .{
+             .color = txt.style.color,
+             .font_size = txt.style.size,
++            // `TextSystem.font_id_mono` / `font_id_bold`; the primary face stands
++            // in until one is loaded.
++            .font_id = if (txt.style.mono) 1 else switch (txt.style.weight) {
++                .semibold, .bold, .black => 2,
++                else => 0,
++            },
+             .wrap_mode = switch (txt.style.wrap) {
+                 .none => .none,
+                 .words => .words,
+diff --git a/src/ui/canvas.zig b/src/ui/canvas.zig
+index fee6e45..3696e07 100644
+--- a/src/ui/canvas.zig
++++ b/src/ui/canvas.zig
+@@ -860,7 +860,18 @@ pub const DrawContext = struct {
+             grad.stop_count,
+         );
+ 
+-        self.scene.insertPathWithLinearGradient(instance, grad.*) catch {};
++        // Respect the canvas's reserved draw order, like fillPath does.
++        if (self.base_order != 0) {
++            self.scene.insertPathWithLinearGradientOrdered(
++                instance,
++                grad.*,
++                self.current_order,
++                self.clip_bounds,
++            ) catch {};
++            self.current_order += 1;
++        } else {
++            self.scene.insertPathWithLinearGradient(instance, grad.*) catch {};
++        }
+     }
+ 
+     /// Fill a path with a radial gradient.
+@@ -913,7 +924,18 @@ pub const DrawContext = struct {
+             grad.stop_count,
+         );
+ 
+-        self.scene.insertPathWithRadialGradient(instance, grad.*) catch {};
++        // Respect the canvas's reserved draw order, like fillPath does.
++        if (self.base_order != 0) {
++            self.scene.insertPathWithRadialGradientOrdered(
++                instance,
++                grad.*,
++                self.current_order,
++                self.clip_bounds,
++            ) catch {};
++            self.current_order += 1;
++        } else {
++            self.scene.insertPathWithRadialGradient(instance, grad.*) catch {};
++        }
+     }
+ 
+     /// Fill a rectangle with a linear gradient.
+diff --git a/src/ui/styles.zig b/src/ui/styles.zig
+index dcb83d2..d9335ba 100644
+--- a/src/ui/styles.zig
++++ b/src/ui/styles.zig
+@@ -157,6 +157,8 @@ pub const TextStyle = struct {
+     alignment: Alignment = .left,
+     underline: bool = false,
+     strikethrough: bool = false,
++    /// Draw with `TextSystem.font_id_mono` (the code editor's face).
++    mono: bool = false,
+ 
+     pub const Weight = enum { thin, light, regular, medium, semibold, bold, black };
+     pub const WrapMode = enum { none, words, newlines };
+@@ -448,11 +450,14 @@ pub const CodeEditorStyle = struct {
+ 
+     // Scrollbar
+     scrollbar_width: f32 = 8,
++    /// Space around the scrollbar; with its width, the lane soft wrap leaves free.
++    scrollbar_padding: f32 = 2,
+     scrollbar_track_color: Color = Color.rgba(0.5, 0.5, 0.5, 0.1),
+     scrollbar_thumb_color: Color = Color.rgba(0.5, 0.5, 0.5, 0.4),
+ 
+     // Code editor specific
+     show_line_numbers: bool = true,
++    soft_wrap: bool = false,
+     gutter_width: f32 = 50,
+     gutter_background: Color = Color.rgb(0.1, 0.1, 0.12),
+     line_number_color: Color = Color.rgb(0.45, 0.45, 0.5),
+@@ -476,6 +481,9 @@ pub const CodeEditorStyle = struct {
+     // Language/encoding display
+     language_mode: []const u8 = "Plain Text",
+     encoding: []const u8 = "UTF-8",
++
++    // Syntax highlighting
++    highlighter: ?@import("../widgets/code_editor_state.zig").Highlighter = null,
+ };
+ 
+ // =============================================================================
+diff --git a/src/widgets/code_editor_state.zig b/src/widgets/code_editor_state.zig
+index 50c816a..d79edcf 100644
+--- a/src/widgets/code_editor_state.zig
++++ b/src/widgets/code_editor_state.zig
+@@ -63,24 +63,11 @@ pub const DEFAULT_TAB_SIZE: u8 = 4;
+ // =============================================================================
+ 
+ /// A highlighted region of text with a specific color
+-pub const HighlightSpan = struct {
+-    /// Start byte offset (inclusive)
+-    start: usize,
+-    /// End byte offset (exclusive)
+-    end: usize,
+-    /// Color for this span
+-    color: Hsla,
+-
+-    pub fn init(start: usize, end: usize, color: Hsla) HighlightSpan {
+-        std.debug.assert(start <= end);
+-        return .{ .start = start, .end = end, .color = color };
+-    }
++pub const HighlightSpan = text_area_mod.ColorSpan;
+ 
+-    /// Check if this span overlaps with a byte range
+-    pub fn overlaps(self: HighlightSpan, range_start: usize, range_end: usize) bool {
+-        return self.start < range_end and self.end > range_start;
+-    }
+-};
++/// Fills the editor's highlight spans for `text[start..end]` (the visible
++/// lines), in order. Called before each render.
++pub const Highlighter = *const fn (editor: *CodeEditorState, text: []const u8, start: usize, end: usize) void;
+ 
+ /// Code editor styling (extends TextAreaState style)
+ pub const Style = struct {
+@@ -187,6 +174,9 @@ pub const CodeEditorState = struct {
+     /// Number of active highlight spans
+     highlight_count: usize = 0,
+ 
++    /// Recomputes highlight spans for the visible lines each render.
++    highlighter: ?Highlighter = null,
++
+     const Self = @This();
+ 
+     // =========================================================================
+@@ -547,6 +537,13 @@ pub const CodeEditorState = struct {
+         else
+             self.bounds.height;
+ 
++        // Rewrap first: the gutter reads the rows, and on-demand rendering
++        // draws no second frame to fix a gutter drawn from the old ones.
++        try self.text_area.updateWrap(text_system);
++        // Then scroll: the line highlight, gutter and syntax spans below
++        // must use this frame's offset, as the text does.
++        self.text_area.stepScroll();
++
+         // 1. Render current line highlight (behind everything else)
+         if (self.isFocused()) {
+             try self.renderCurrentLineHighlight(scene, text_system, content_height);
+@@ -655,7 +652,8 @@ pub const CodeEditorState = struct {
+         const visible_count_f = @ceil(self.bounds.height / line_height) + 1;
+         const visible_count: usize = @intFromFloat(visible_count_f);
+         const first = self.calcFirstVisibleLine(scroll_y, line_height);
+-        return @min(first + visible_count, self.lineCount());
++        // A scroll past the end (set before the text arrived) shows no rows.
++        return @max(first, @min(first + visible_count, self.lineCount()));
+     }
+ 
+     fn renderLineNumbers(
+@@ -669,19 +667,23 @@ pub const CodeEditorState = struct {
+         const metrics = text_system.getMetrics() orelse return;
+         const line_height = metrics.line_height;
+         const scroll_y = self.text_area.scroll_offset_y;
+-        const cursor_row = self.text_area.cursor_row;
++        const cursor_line = self.text_area.textLine(self.text_area.cursor_row);
+ 
+         var line_num_buf: [16]u8 = undefined;
+ 
++        // Number lines of the text, not wrapped rows: only a line's first row gets one.
++        var line = self.text_area.textLine(first_visible);
+         for (first_visible..last_visible) |row| {
++            if (row > first_visible and self.text_area.isLineStart(row)) line += 1;
++            if (!self.text_area.isLineStart(row)) continue;
+             const line_y = self.bounds.y + @as(f32, @floatFromInt(row)) * line_height - scroll_y;
+             const baseline_y = metrics.calcBaseline(line_y, line_height);
+ 
+             // Format line number (1-based)
+-            const line_num = std.fmt.bufPrint(&line_num_buf, "{d}", .{row + 1}) catch continue;
++            const line_num = std.fmt.bufPrint(&line_num_buf, "{d}", .{line + 1}) catch continue;
+ 
+             // Choose color based on current line
+-            const color = if (row == cursor_row)
++            const color = if (line == cursor_line)
+                 self.style.current_line_number_color
+             else
+                 self.style.line_number_color;
+@@ -718,71 +720,25 @@ pub const CodeEditorState = struct {
+         // Update text area style from code editor style
+         self.text_area.style = self.style.text;
+ 
+-        // If we have highlight spans, render with per-span coloring
+-        if (self.highlight_count > 0) {
+-            try self.renderHighlightedContent(scene, text_system, scale_factor);
+-        } else {
+-            // No highlights - delegate to standard text area render
+-            try self.text_area.render(scene, text_system, scale_factor);
++        if (self.highlighter) |highlight| {
++            self.clearHighlights();
++            const lines = self.visibleLines(text_system);
++            highlight(self, self.getText(), self.text_area.lineStartOffset(lines.first), self.text_area.lineEndOffset(lines.last));
+         }
+-    }
+ 
+-    fn renderHighlightedContent(self: *Self, scene: *Scene, text_system: *TextSystem, scale_factor: f32) !void {
+-        // For now, render normally and overlay highlight backgrounds
+-        // Future: per-character coloring with highlight spans
++        // Highlight spans color the text they cover
++        self.text_area.color_spans = self.getHighlights();
++        defer self.text_area.color_spans = &.{};
+         try self.text_area.render(scene, text_system, scale_factor);
++    }
+ 
+-        // Render highlight span backgrounds (behind text)
+-        const metrics = text_system.getMetrics() orelse return;
+-        const line_height = metrics.line_height;
+-        const scroll_y = self.text_area.scroll_offset_y;
+-        const text = self.getText();
+-
+-        for (self.highlight_spans[0..self.highlight_count]) |span| {
+-            if (span.start >= text.len) continue;
+-            const end = @min(span.end, text.len);
+-            if (span.start >= end) continue;
+-
+-            // Find which lines this span covers
+-            const start_row = self.text_area.lineForOffset(span.start);
+-            const end_row = self.text_area.lineForOffset(end);
+-
+-            for (start_row..end_row + 1) |row| {
+-                const line_start = self.text_area.lineStartOffset(row);
+-                const line_end = self.text_area.lineEndOffset(row);
+-
+-                // Calculate span range within this line
+-                const span_line_start = if (row == start_row) span.start - line_start else 0;
+-                const span_line_end = if (row == end_row) end - line_start else line_end - line_start;
+-
+-                if (span_line_start >= span_line_end) continue;
+-
+-                const line_content = self.lineContent(row);
+-                const line_y = self.text_area.bounds.y + @as(f32, @floatFromInt(row)) * line_height - scroll_y;
+-
+-                // Calculate x positions
+-                var start_x = self.text_area.bounds.x - self.text_area.scroll_offset_x;
+-                if (span_line_start > 0 and span_line_start <= line_content.len) {
+-                    start_x += self.measureLineNumber(text_system, line_content[0..span_line_start]) catch 0;
+-                }
+-
+-                var end_x = self.text_area.bounds.x - self.text_area.scroll_offset_x;
+-                if (span_line_end > 0 and span_line_end <= line_content.len) {
+-                    end_x += self.measureLineNumber(text_system, line_content[0..span_line_end]) catch 0;
+-                }
+-
+-                // Create highlight background quad with reduced opacity
+-                const highlight_color = Hsla.init(span.color.h, span.color.s, span.color.l, span.color.a * 0.3);
+-                const highlight_quad = Quad.filled(
+-                    start_x,
+-                    line_y,
+-                    @max(2, end_x - start_x),
+-                    line_height,
+-                    highlight_color,
+-                );
+-                try scene.insertQuadClipped(highlight_quad);
+-            }
+-        }
++    /// First and last line in view, by the text area's scroll offset.
++    fn visibleLines(self: *Self, text_system: *TextSystem) struct { first: usize, last: usize } {
++        const count = self.text_area.lineCount();
++        const metrics = text_system.getMetrics() orelse return .{ .first = 0, .last = count -| 1 };
++        const first: usize = @intFromFloat(@max(0, @floor(self.text_area.scroll_offset_y / metrics.line_height)));
++        const rows: usize = @intFromFloat(@ceil(self.text_area.bounds.height / metrics.line_height) + 1);
++        return .{ .first = @min(first, count -| 1), .last = @min(first + rows, count) -| 1 };
+     }
+ 
+     // =========================================================================
+@@ -799,6 +755,7 @@ pub const CodeEditorState = struct {
+ 
+     pub fn setScrollOffsetY(self: *Self, offset: f32) void {
+         self.text_area.scroll_offset_y = offset;
++        self.text_area.scrollBy(0, 0); // clamp and stop any wheel easing
+     }
+ 
+     /// Render the status bar at the bottom of the editor
+@@ -844,7 +801,7 @@ pub const CodeEditorState = struct {
+         // Cursor position: "Ln X, Col Y"
+         var ln_buf: [32]u8 = undefined;
+         const ln_text = std.fmt.bufPrint(&ln_buf, "Ln {d}, Col {d}", .{
+-            self.getCursorRow() + 1, // 1-indexed for display
++            self.text_area.textLine(self.getCursorRow()) + 1, // 1-indexed for display
+             self.getCursorCol() + 1,
+         }) catch "Ln ?, Col ?";
+ 
+diff --git a/src/widgets/text_area_state.zig b/src/widgets/text_area_state.zig
+index 3833bf0..4f0b36b 100644
+--- a/src/widgets/text_area_state.zig
++++ b/src/widgets/text_area_state.zig
+@@ -94,6 +94,32 @@ pub const Style = struct {
+     preedit_underline_color: Hsla = Hsla.init(0, 0, 0.3, 1),
+ };
+ 
++/// A byte range drawn in its own text color (syntax highlighting).
++pub const Mark = struct {
++    /// Start byte offset (inclusive)
++    start: usize,
++    /// End byte offset (exclusive)
++    end: usize,
++};
++
++pub const ColorSpan = struct {
++    /// Start byte offset (inclusive)
++    start: usize,
++    /// End byte offset (exclusive)
++    end: usize,
++    color: Hsla,
++
++    pub fn init(start: usize, end: usize, color: Hsla) ColorSpan {
++        std.debug.assert(start <= end);
++        return .{ .start = start, .end = end, .color = color };
++    }
++
++    /// Check if this span overlaps with a byte range
++    pub fn overlaps(self: ColorSpan, range_start: usize, range_end: usize) bool {
++        return self.start < range_end and self.end > range_start;
++    }
++};
++
+ pub const ScrollbarStyle = struct {
+     /// Show vertical scrollbar when content exceeds viewport
+     show_vertical: bool = true,
+@@ -130,6 +156,8 @@ pub const TextAreaState = struct {
+ 
+     // Line index: byte offset of each line start (always has at least one element: 0)
+     line_starts: std.ArrayList(usize),
++    /// While wrapping, the text line each row belongs to (for line numbers).
++    row_lines: std.ArrayList(u32) = .empty,
+ 
+     /// Cursor position as byte offset into buffer
+     cursor_byte: usize = 0,
+@@ -146,6 +174,8 @@ pub const TextAreaState = struct {
+     /// Preferred column for up/down navigation (preserves horizontal position)
+     /// Stored as byte offset within line
+     preferred_column: ?usize = null,
++    /// Draw the cursor as a block over the character (vim's normal mode).
++    cursor_block: bool = false,
+ 
+     // IME composition state
+     preedit_buffer: std.ArrayList(u8),
+@@ -158,8 +188,55 @@ pub const TextAreaState = struct {
+ 
+     // Scroll state
+     scroll_offset_x: f32 = 0,
++    /// Widest visible line, measured each render; bounds horizontal scroll.
++    content_width: f32 = 0,
++    /// Set when the cursor moves; the next render scrolls it into view horizontally.
++    reveal_cursor_x: bool = false,
++    /// Wrap long lines at the bounds' width instead of scrolling sideways.
++    soft_wrap: bool = false,
++    /// Columns per row while wrapping (0 = no wrap). The line index then holds
++    /// visual rows, so cursor, selection, clicks and scrolling follow them.
++    wrap_cols: usize = 0,
+     scroll_offset_y: f32 = 0,
+ 
++    /// Wheel scrolling eases the offset toward these targets over the next
++    /// frames. Programmatic scrolling sets both and stops the animation.
++    scroll_target_x: f32 = 0,
++    scroll_target_y: f32 = 0,
++    scroll_animating: bool = false,
++    scroll_last_input_us: i64 = 0,
++    scroll_last_step_us: i64 = 0,
++    /// The wheel scroll already advanced for the frame being drawn.
++    scroll_stepped: bool = false,
++    /// When the frame being rendered will be shown (awake-clock µs; 0 = now).
++    /// Easing steps by it so each frame moves by its real on-screen interval.
++    frame_time_us: i64 = 0,
++    /// Offset written by the last easing step; a different value next frame
++    /// means something scrolled directly, so the target is re-synced.
++    scroll_last_applied_x: f32 = 0,
++    scroll_last_applied_y: f32 = 0,
++    /// Continuous input (trackpad, momentum, a spinning wheel) is resampled
++    /// rather than eased: its targets are kept with their input times and
++    /// read back at a fixed delay behind each frame. Events land unevenly
++    /// against vsync (0, 1 or 2 a frame); interpolating between them gives
++    /// even motion at a small constant lag, where easing needed a long time
++    /// constant, and so a long lag, to hide that unevenness.
++    scroll_resampling: bool = false,
++    /// How far ahead of the clock frames are shown (the display link's lead,
++    /// ~1.5 frames: 12ms at 120Hz, 24ms at 60Hz), averaged, and the longest
++    /// recent gap between continuous events (it rises quickly and decays
++    /// slowly: a VM's events jitter 10-30ms apart). Their sum, plus slack,
++    /// is how far behind a frame input is read, so a frame almost always
++    /// falls between two samples whatever the refresh rate or event rate.
++    scroll_lead_us: i64 = 0,
++    scroll_gap_us: i64 = scroll_gap_init_us,
++    /// The delay frames read input at, slewed toward that sum: a sudden
++    /// change would stall or skip a frame; slewed, input plays a little
++    /// slower or faster for a moment (0 = adopt it at once).
++    scroll_delay_us: i64 = 0,
++    scroll_samples: [scroll_samples_max]ScrollSample = undefined,
++    scroll_sample_count: usize = 0,
++
+     // Layout info (set during render)
+     line_height: f32 = 0,
+     viewport_height: f32 = 0,
+@@ -167,6 +244,15 @@ pub const TextAreaState = struct {
+     // Placeholder text
+     placeholder: []const u8 = "",
+ 
++    /// Colored ranges for the next render, sorted by start and non-overlapping;
++    /// text outside them uses `style.text_color`.
++    color_spans: []const ColorSpan = &.{},
++
++    /// Ranges drawn behind the text in `mark_color` (search matches, say),
++    /// sorted by start; set for the next render.
++    marks: []const Mark = &.{},
++    mark_color: Hsla = Hsla.init(0.13, 0.9, 0.5, 0.35),
++
+     // Callbacks
+     on_change: ?*const fn (*TextAreaState) void = null,
+ 
+@@ -179,6 +265,10 @@ pub const TextAreaState = struct {
+     /// Edit history for undo/redo (heap-allocated, ~512KB)
+     edit_history: ?*EditHistory = null,
+ 
++    /// Bumped whenever the buffer changes. Derived caches (e.g. syntax
++    /// highlighting) compare it instead of hashing the text each frame.
++    revision: u64 = 0,
++
+     const Self = @This();
+ 
+     pub const BindingSync = enum {
+@@ -216,6 +306,7 @@ pub const TextAreaState = struct {
+     pub fn deinit(self: *Self) void {
+         self.buffer.deinit(self.allocator);
+         self.line_starts.deinit(self.allocator);
++        self.row_lines.deinit(self.allocator);
+         self.preedit_buffer.deinit(self.allocator);
+         if (self.edit_history) |h| h.destroy(self.allocator);
+     }
+@@ -252,6 +343,7 @@ pub const TextAreaState = struct {
+         self.cursor_byte = @min(self.cursor_byte, self.buffer.items.len);
+         self.updateCursorPosition();
+         self.selection_anchor = null;
++        self.revision +%= 1;
+     }
+ 
+     /// Reconcile a controlled binding while preserving valid editing offsets.
+@@ -295,18 +387,57 @@ pub const TextAreaState = struct {
+     // Line Index Management
+     // =========================================================================
+ 
+-    /// Rebuild the entire line index from scratch
++    /// Rebuild the entire line index from scratch. While wrapping, a row
++    /// that reaches `wrap_cols` breaks after its last space, or mid-word if it has none.
+     fn rebuildLineIndex(self: *Self) void {
+         self.line_starts.clearRetainingCapacity();
+         self.line_starts.append(self.allocator, 0) catch return;
++        self.row_lines.clearRetainingCapacity();
++        const wrapping = self.wrap_cols > 0;
++        if (wrapping) self.row_lines.append(self.allocator, 0) catch return;
+ 
+-        for (self.buffer.items, 0..) |c, i| {
+-            if (c == '\n') {
+-                self.line_starts.append(self.allocator, i + 1) catch return;
++        const text = self.buffer.items;
++        var line: u32 = 0;
++        var cols: usize = 0;
++        var after_space: ?usize = null;
++        var i: usize = 0;
++        while (i < text.len) {
++            if (text[i] == '\n') {
++                i += 1;
++                cols = 0;
++                after_space = null;
++                line += 1;
++                self.line_starts.append(self.allocator, i) catch return;
++                if (wrapping) self.row_lines.append(self.allocator, line) catch return;
++                continue;
++            }
++            if (self.wrap_cols > 0 and cols == self.wrap_cols) {
++                const brk = after_space orelse i;
++                self.line_starts.append(self.allocator, brk) catch return;
++                self.row_lines.append(self.allocator, line) catch return;
++                cols = std.unicode.utf8CountCodepoints(text[brk..i]) catch i - brk;
++                after_space = null;
+             }
++            if (text[i] == ' ') after_space = i + 1;
++            cols += 1;
++            i = common.nextCharBoundary(text, i);
+         }
+     }
+ 
++    /// Whether `row` begins a line of the text, not a wrapped continuation.
++    pub fn isLineStart(self: *const Self, row: usize) bool {
++        const start = self.lineStartOffset(row);
++        return start == 0 or self.buffer.items[start - 1] == '\n';
++    }
++
++    /// 0-based line of the text (not visual row) that `row` belongs to.
++    pub fn textLine(self: *const Self, row: usize) usize {
++        // Unwrapped, rows are lines; wrapped, the index records them.
++        if (self.wrap_cols == 0) return row;
++        if (row < self.row_lines.items.len) return self.row_lines.items[row];
++        return std.mem.count(u8, self.buffer.items[0..self.lineStartOffset(row)], "\n");
++    }
++
+     /// Get the number of lines
+     pub fn lineCount(self: *const Self) usize {
+         return self.line_starts.items.len;
+@@ -342,8 +473,9 @@ pub const TextAreaState = struct {
+     /// Get the byte offset for the end of a line (before \n or end of buffer)
+     pub fn lineEndOffset(self: *const Self, row: usize) usize {
+         if (row + 1 < self.line_starts.items.len) {
+-            // End is one before the next line start (the \n)
+-            return self.line_starts.items[row + 1] - 1;
++            // End is one before the next line start (the \n), or at it for a wrapped row
++            const next = self.line_starts.items[row + 1];
++            return if (self.buffer.items[next - 1] == '\n') next - 1 else next;
+         }
+         return self.buffer.items.len;
+     }
+@@ -374,7 +506,7 @@ pub const TextAreaState = struct {
+             }
+         }
+ 
+-        if (new_line_offsets.items.len == 0 and inserted_text.len > 0) {
++        if (new_line_offsets.items.len == 0 and inserted_text.len > 0 and self.wrap_cols == 0) {
+             // No newlines inserted, just shift subsequent line starts
+             for (self.line_starts.items) |*start| {
+                 if (start.* > insert_pos) {
+@@ -422,11 +554,223 @@ pub const TextAreaState = struct {
+         return focus_mod.Focusable.fromInstance(Self, self);
+     }
+ 
+-    fn maxScrollY(self: *const Self) f32 {
++    pub fn maxScrollY(self: *const Self) f32 {
+         const content_height = @as(f32, @floatFromInt(self.lineCount())) * self.line_height;
+         return @max(0, content_height - self.viewport_height);
+     }
+ 
++    /// Room past the widest line so the caret at its end stays visible.
++    const scroll_margin_x: f32 = 2;
++
++    /// Wheel event gaps below this are a trackpad (or a spinning wheel).
++    const scroll_fast_gap_us: i64 = 30_000;
++    /// A continuous stream stays one until a gap this long (events jitter,
++    /// up to 30ms apart in a VM), and holds its last sample until then.
++    const scroll_stream_gap_us: i64 = 60_000;
++    const scroll_gap_init_us: i64 = 10_000;
++    /// Time constant easing each discrete notch, so it glides.
++    const scroll_tau_ms: f32 = 45;
++    /// Assumed frame time for the first step after a pause.
++    const scroll_default_dt_us: i64 = 8_333;
++    const scroll_samples_max = 8;
++    const scroll_lead_max_us: i64 = 50_000;
++
++    const ScrollSample = struct { t_us: i64, x: f32, y: f32 };
++
++    fn maxScrollX(self: *const Self) f32 {
++        return @max(0, self.content_width + scroll_margin_x - self.bounds.width);
++    }
++
++    /// Scrolls immediately (cursor reveal, programmatic jumps), clamped.
++    pub fn scrollBy(self: *Self, dx: f32, dy: f32) void {
++        self.scroll_offset_x = std.math.clamp(self.scroll_offset_x - dx, 0, self.maxScrollX());
++        self.scroll_offset_y = std.math.clamp(self.scroll_offset_y - dy, 0, self.maxScrollY());
++        self.syncScrollTarget();
++    }
++
++    /// Integrates a wheel delta into the target. A precise device (trackpad)
++    /// and frequent events (a spinning wheel) are resampled; sparse ones (a
++    /// line wheel) are eased, so each notch glides instead of jumping 20px on
++    /// one frame. `time_us` is when the input happened (0 = now): arrival
++    /// times jitter, which resampling shows.
++    pub fn scrollBySmooth(self: *Self, dx: f32, dy: f32, time_us: i64, precise: bool) void {
++        const now = if (time_us != 0) time_us else getTimestampUs();
++        const gap = if (self.scroll_last_input_us == 0) std.math.maxInt(i64) else now - self.scroll_last_input_us;
++        self.scroll_last_input_us = now;
++        const streaming = self.scroll_animating and self.scroll_resampling;
++        const continuous = precise or gap < if (streaming) scroll_stream_gap_us else scroll_fast_gap_us;
++        if (gap < scroll_stream_gap_us) {
++            const d = gap - self.scroll_gap_us;
++            self.scroll_gap_us += if (d > 0) @divTrunc(d, 2) else @divTrunc(d, 32);
++        }
++
++        // Start from, or rebase on, where the offset actually is: a cursor
++        // reveal may have moved it since the last frame.
++        const moved = @abs(self.scroll_offset_x - self.scroll_last_applied_x) > 0.01 or
++            @abs(self.scroll_offset_y - self.scroll_last_applied_y) > 0.01;
++        if (!self.scroll_animating or moved) {
++            self.scroll_target_x = self.scroll_offset_x;
++            self.scroll_target_y = self.scroll_offset_y;
++            self.scroll_last_step_us = now;
++            self.scroll_last_applied_x = self.scroll_offset_x;
++            self.scroll_last_applied_y = self.scroll_offset_y;
++        }
++        // Resampling (re)starts from the offset as it is now.
++        if (!self.scroll_animating or moved or continuous != self.scroll_resampling) {
++            self.scroll_samples[0] = .{ .t_us = now - self.scroll_gap_us, .x = self.scroll_offset_x, .y = self.scroll_offset_y };
++            self.scroll_sample_count = 1;
++            self.scroll_delay_us = 0;
++        }
++        self.scroll_resampling = continuous;
++        self.scroll_target_x = std.math.clamp(self.scroll_target_x - dx, 0, self.maxScrollX());
++        self.scroll_target_y = std.math.clamp(self.scroll_target_y - dy, 0, self.maxScrollY());
++
++        if (self.scroll_sample_count == scroll_samples_max) {
++            std.mem.copyForwards(ScrollSample, self.scroll_samples[0 .. scroll_samples_max - 1], self.scroll_samples[1..]);
++            self.scroll_sample_count -= 1;
++        }
++        self.scroll_samples[self.scroll_sample_count] = .{ .t_us = now, .x = self.scroll_target_x, .y = self.scroll_target_y };
++        self.scroll_sample_count += 1;
++        self.scroll_animating = true;
++    }
++
++    /// Stops easing and adopts the current offset as the target.
++    fn syncScrollTarget(self: *Self) void {
++        self.scroll_target_x = self.scroll_offset_x;
++        self.scroll_target_y = self.scroll_offset_y;
++        self.scroll_animating = false;
++        self.scroll_last_applied_x = self.scroll_offset_x;
++        self.scroll_last_applied_y = self.scroll_offset_y;
++    }
++
++    /// Advances the wheel scroll for the frame being drawn, once: an editor
++    /// calls it before drawing what reads the offset (gutter, highlighting),
++    /// so those move with the text instead of a frame behind it.
++    pub fn stepScroll(self: *Self) void {
++        if (self.scroll_stepped) return;
++        self.scroll_stepped = true;
++        self.updateSmoothScroll();
++    }
++
++    /// Advances the eased offset one frame toward the wheel target. Called
++    /// from `render` before the visible lines are computed, so drawing,
++    /// hit-testing, the gutter and the syntax window all see the same value.
++    fn updateSmoothScroll(self: *Self) void {
++        if (!self.scroll_animating) {
++            self.scroll_last_applied_x = self.scroll_offset_x;
++            self.scroll_last_applied_y = self.scroll_offset_y;
++            return;
++        }
++
++        // A cursor reveal or programmatic scroll moved the offset directly;
++        // adopt it rather than pulling it back toward a stale target.
++        if (@abs(self.scroll_offset_x - self.scroll_last_applied_x) > 0.01 or
++            @abs(self.scroll_offset_y - self.scroll_last_applied_y) > 0.01)
++        {
++            self.syncScrollTarget();
++            return;
++        }
++
++        self.scroll_target_x = std.math.clamp(self.scroll_target_x, 0, self.maxScrollX());
++        self.scroll_target_y = std.math.clamp(self.scroll_target_y, 0, self.maxScrollY());
++
++        const now = if (self.frame_time_us != 0) self.frame_time_us else getTimestampUs();
++        if (self.frame_time_us != 0) {
++            const lead = std.math.clamp(self.frame_time_us - getTimestampUs(), 0, scroll_lead_max_us);
++            self.scroll_lead_us = if (self.scroll_lead_us == 0) lead else self.scroll_lead_us + @divTrunc(lead - self.scroll_lead_us, 8);
++        }
++        if (self.scroll_resampling) {
++            self.slewScrollDelay(now);
++            self.resampleScroll(now - self.scroll_delay_us);
++            self.scroll_last_step_us = now;
++            self.scroll_last_applied_x = self.scroll_offset_x;
++            self.scroll_last_applied_y = self.scroll_offset_y;
++            return;
++        }
++        var dt_us = now - self.scroll_last_step_us;
++        if (dt_us <= 0 or dt_us > 50_000) dt_us = scroll_default_dt_us;
++        const tau_us = scroll_tau_ms * 1000;
++        const alpha = 1 - @exp(-@as(f32, @floatFromInt(dt_us)) / tau_us);
++
++        const dx = self.scroll_target_x - self.scroll_offset_x;
++        const dy = self.scroll_target_y - self.scroll_offset_y;
++        self.scroll_offset_x = std.math.clamp(self.scroll_offset_x + dx * alpha, 0, self.maxScrollX());
++        self.scroll_offset_y = std.math.clamp(self.scroll_offset_y + dy * alpha, 0, self.maxScrollY());
++        self.scroll_last_step_us = now;
++
++        if (@abs(dx) < 0.05 and @abs(dy) < 0.05) {
++            self.scroll_offset_x = self.scroll_target_x;
++            self.scroll_offset_y = self.scroll_target_y;
++            self.scroll_animating = false;
++        }
++        self.scroll_last_applied_x = self.scroll_offset_x;
++        self.scroll_last_applied_y = self.scroll_offset_y;
++    }
++
++    /// How far behind a frame's presentation time continuous input should be
++    /// read: the lead plus the recent longest event gap and slack.
++    fn scrollResampleDelayUs(self: *const Self) i64 {
++        return self.scroll_lead_us + self.scroll_gap_us + 2_000;
++    }
++
++    /// Moves the applied delay toward `scrollResampleDelayUs`, per frame at
++    /// most a quarter of its interval longer (input plays at 3/4 speed) or a
++    /// sixteenth shorter, whatever the refresh rate.
++    fn slewScrollDelay(self: *Self, now: i64) void {
++        const target = self.scrollResampleDelayUs();
++        if (self.scroll_delay_us == 0) {
++            self.scroll_delay_us = target;
++            return;
++        }
++        var dt_us = now - self.scroll_last_step_us;
++        if (dt_us <= 0 or dt_us > 50_000) dt_us = scroll_default_dt_us;
++        self.scroll_delay_us += std.math.clamp(target - self.scroll_delay_us, -@divTrunc(dt_us, 16), @divTrunc(dt_us, 4));
++    }
++
++    /// Sets the offset to the input as it was over the event gap before
++    /// `t_us`, averaged: a trackpad's deltas are smooth but its timestamps
++    /// jitter, so each segment between two samples has its own speed, and
++    /// read at one point the speed jumps at every sample (on a real trackpad,
++    /// ~10% per frame). Past the last sample it holds there, so a late event
++    /// continues the stream; once the stream has gone quiet, scrolling is done.
++    fn resampleScroll(self: *Self, t_us: i64) void {
++        const last = self.scroll_samples[self.scroll_sample_count - 1];
++        if (t_us - last.t_us >= scroll_stream_gap_us) {
++            self.scroll_offset_x = last.x;
++            self.scroll_offset_y = last.y;
++            self.scroll_animating = false;
++            return;
++        }
++        const n = 4;
++        var x: f32 = 0;
++        var y: f32 = 0;
++        for (0..n) |k| {
++            const p = self.scrollSampleAt(t_us - @divTrunc(self.scroll_gap_us * @as(i64, @intCast(k)), n - 1));
++            x += p.x / n;
++            y += p.y / n;
++        }
++        self.scroll_offset_x = std.math.clamp(x, 0, self.maxScrollX());
++        self.scroll_offset_y = std.math.clamp(y, 0, self.maxScrollY());
++    }
++
++    /// The input at `t_us`, interpolated between the samples around it and
++    /// held at either end.
++    fn scrollSampleAt(self: *const Self, t_us: i64) ScrollSample {
++        const s = self.scroll_samples[0..self.scroll_sample_count];
++        var i = s.len - 1;
++        if (t_us >= s[i].t_us) return s[i];
++        while (i > 0 and s[i - 1].t_us > t_us) i -= 1;
++        if (i == 0) return s[0];
++        const a = s[i - 1];
++        const b = s[i];
++        const f = @as(f32, @floatFromInt(t_us - a.t_us)) / @as(f32, @floatFromInt(b.t_us - a.t_us));
++        return .{ .t_us = t_us, .x = a.x + (b.x - a.x) * f, .y = a.y + (b.y - a.y) * f };
++    }
++
++    pub fn isScrollAnimating(self: *const Self) bool {
++        return self.scroll_animating;
++    }
++
+     pub fn getBounds(self: *const Self) struct { x: f32, y: f32, width: f32, height: f32 } {
+         return .{
+             .x = self.bounds.x,
+@@ -531,7 +875,16 @@ pub const TextAreaState = struct {
+ 
+         switch (code) {
+             .delete => {
+-                // Backspace
++                // Backspace; ⌘ deletes to line start, ⌥ to the previous word.
++                if (!self.hasSelection() and self.cursor_byte > 0 and (mods.cmd or mods.alt)) {
++                    const line_start = self.lineStartOffset(self.cursor_row);
++                    self.selection_anchor = if (mods.cmd and line_start < self.cursor_byte)
++                        line_start
++                    else if (mods.alt)
++                        common.prevWordBoundary(self.buffer.items, self.cursor_byte)
++                    else
++                        common.prevCharBoundary(self.buffer.items, self.cursor_byte);
++                }
+                 if (self.hasSelection()) {
+                     self.deleteSelectionWithHistory();
+                 } else if (self.cursor_byte > 0) {
+@@ -563,6 +916,16 @@ pub const TextAreaState = struct {
+                 }
+             },
+             .forward_delete => {
++                // ⌘ deletes to line end, ⌥ to the next word.
++                if (!self.hasSelection() and self.cursor_byte < self.buffer.items.len and (mods.cmd or mods.alt)) {
++                    const line_end = self.lineEndOffset(self.cursor_row);
++                    self.selection_anchor = if (mods.cmd and line_end > self.cursor_byte)
++                        line_end
++                    else if (mods.alt)
++                        common.nextWordBoundary(self.buffer.items, self.cursor_byte)
++                    else
++                        common.nextCharBoundary(self.buffer.items, self.cursor_byte);
++                }
+                 if (self.hasSelection()) {
+                     self.deleteSelectionWithHistory();
+                 } else if (self.cursor_byte < self.buffer.items.len) {
+@@ -786,6 +1149,16 @@ pub const TextAreaState = struct {
+     // Selection Helpers
+     // =========================================================================
+ 
++    /// Place the cursor at `cursor` (a codepoint boundary), selecting from `anchor`.
++    pub fn select(self: *Self, anchor: ?usize, cursor: usize) void {
++        self.selection_anchor = anchor;
++        self.cursor_byte = @min(cursor, self.buffer.items.len);
++        self.updateCursorPosition();
++        self.preferred_column = null;
++        self.ensureCursorVisible();
++        self.resetCursorBlink();
++    }
++
+     pub fn hasSelection(self: *const Self) bool {
+         return self.selection_anchor != null and self.selection_anchor.? != self.cursor_byte;
+     }
+@@ -1103,6 +1476,7 @@ pub const TextAreaState = struct {
+     }
+ 
+     fn notifyChange(self: *Self) void {
++        self.revision +%= 1;
+         if (self.on_change) |callback| {
+             callback(self);
+         }
+@@ -1113,6 +1487,7 @@ pub const TextAreaState = struct {
+     // =========================================================================
+ 
+     pub fn render(self: *Self, scene: *Scene, text_system: *TextSystem, scale_factor: f32) !void {
++        defer self.scroll_stepped = false;
+         self.updateBlink();
+ 
+         const text = self.buffer.items;
+@@ -1123,6 +1498,12 @@ pub const TextAreaState = struct {
+         self.line_height = metrics.line_height;
+         self.viewport_height = self.bounds.height;
+ 
++        try self.updateWrap(text_system);
++
++        // Move one frame toward the wheel target before anything reads the
++        // offset (visible range, clipping, cursor), unless the editor already has.
++        self.stepScroll();
++
+         // Process pending click if any (needs text_system for measurement)
+         if (self.pending_click) |click| {
+             // Note: Error is intentionally ignored here - click positioning failure is recoverable
+@@ -1138,6 +1519,7 @@ pub const TextAreaState = struct {
+         const visible_count_f = @ceil(self.viewport_height / self.line_height) + 1;
+         const visible_count: usize = @intFromFloat(visible_count_f);
+         const last_visible = @min(first_visible + visible_count, self.lineCount());
++        try self.updateScrollX(text_system, first_visible, last_visible);
+ 
+         // Push clip for text content area
+         try scene.pushClip(.{
+@@ -1166,9 +1548,10 @@ pub const TextAreaState = struct {
+                 &opts,
+             );
+         } else if (has_content) {
+-            // Render selection background first
++            // Render marks and the selection behind the text
++            try self.renderMarks(scene, text_system, first_visible, last_visible);
+             if (self.hasSelection()) {
+-                try self.renderSelection(scene, text_system, scale_factor);
++                try self.renderRange(scene, text_system, self.selectionStart(), self.selectionEnd(), self.style.selection_color, true);
+             }
+ 
+             // Render visible lines
+@@ -1269,24 +1652,54 @@ pub const TextAreaState = struct {
+                 );
+             }
+         } else {
+-            // Normal line rendering
+-            if (line_content.len > 0) {
+-                var line_opts = text_mod.RenderTextOptions{};
+-                _ = try text_mod.renderText(
++            // Normal line rendering, split into colored runs
++            const line_start = self.lineStartOffset(row);
++            var pen_x = self.bounds.x - self.scroll_offset_x;
++            var pos: usize = 0;
++            var span_i = self.firstSpanEndingAfter(line_start);
++            while (pos < line_content.len) {
++                var end = line_content.len;
++                var color = self.style.text_color;
++                if (span_i < self.color_spans.len) {
++                    const span = self.color_spans[span_i];
++                    const span_start = @max(span.start, line_start + pos) - line_start;
++                    if (span_start > pos) {
++                        end = @min(end, span_start);
++                    } else {
++                        end = @min(end, span.end - line_start);
++                        color = span.color;
++                        span_i += 1;
++                    }
++                }
++                if (end == pos) continue;
++                var opts = text_mod.RenderTextOptions{};
++                pen_x += try text_mod.renderText(
+                     scene,
+                     text_system,
+-                    line_content,
+-                    self.bounds.x - self.scroll_offset_x,
++                    line_content[pos..end],
++                    pen_x,
+                     baseline_y,
+                     scale_factor,
+-                    self.style.text_color,
++                    color,
+                     metrics.point_size,
+-                    &line_opts,
++                    &opts,
+                 );
++                pos = end;
+             }
+         }
+     }
+ 
++    /// Index of the first color span that ends after `offset`.
++    fn firstSpanEndingAfter(self: *const Self, offset: usize) usize {
++        var lo: usize = 0;
++        var hi = self.color_spans.len;
++        while (lo < hi) {
++            const mid = (lo + hi) / 2;
++            if (self.color_spans[mid].end <= offset) lo = mid + 1 else hi = mid;
++        }
++        return lo;
++    }
++
+     fn renderCursor(
+         self: *Self,
+         scene: *Scene,
+@@ -1310,29 +1723,51 @@ pub const TextAreaState = struct {
+         const cursor_height = metrics.line_height;
+         const cursor_y = line_y + (self.line_height - cursor_height) / 2;
+ 
+-        const cursor = Quad.filled(
+-            cursor_x,
+-            cursor_y,
+-            1.5,
+-            cursor_height,
+-            self.style.cursor_color,
+-        );
++        var width: f32 = 1.5;
++        var color = self.style.cursor_color;
++        if (self.cursor_block) {
++            const line_content = self.lineContent(self.cursor_row);
++            const end = if (self.cursor_col < line_content.len) common.nextCharBoundary(line_content, self.cursor_col) else self.cursor_col;
++            width = try self.measureText(text_system, if (end > self.cursor_col) line_content[self.cursor_col..end] else " ");
++            color.a *= 0.35;
++        }
++        const cursor = Quad.filled(cursor_x, cursor_y, width, cursor_height, color);
+         try scene.insertQuadClipped(cursor);
+ 
+         // Store cursor rect for IME positioning
+-        self.cursor_rect = .{ .x = cursor_x, .y = cursor_y, .width = 1.5, .height = cursor_height };
++        self.cursor_rect = .{ .x = cursor_x, .y = cursor_y, .width = width, .height = cursor_height };
+     }
+ 
+-    fn renderSelection(
++    /// The marks overlapping the visible rows.
++    fn renderMarks(self: *Self, scene: *Scene, text_system: *TextSystem, first_row: usize, last_row: usize) !void {
++        if (self.marks.len == 0 or last_row <= first_row) return;
++        const from = self.lineStartOffset(first_row);
++        const to = self.lineEndOffset(last_row - 1);
++        // Marks are sorted and don't overlap, so their ends are sorted too.
++        var lo: usize = 0;
++        var hi = self.marks.len;
++        while (lo < hi) {
++            const mid = lo + (hi - lo) / 2;
++            if (self.marks[mid].end <= from) lo = mid + 1 else hi = mid;
++        }
++        for (self.marks[lo..]) |m| {
++            if (m.start > to) break;
++            try self.renderRange(scene, text_system, @max(m.start, from), @min(m.end, to), self.mark_color, false);
++        }
++    }
++
++    /// Fills `[sel_start, sel_end)` behind the text, a rect per row; `newline`
++    /// extends rows the range continues past.
++    fn renderRange(
+         self: *Self,
+         scene: *Scene,
+         text_system: *TextSystem,
+-        scale_factor: f32,
++        sel_start: usize,
++        sel_end: usize,
++        color: Hsla,
++        newline: bool,
+     ) !void {
+-        _ = scale_factor;
+-
+-        const sel_start = self.selectionStart();
+-        const sel_end = self.selectionEnd();
++        if (sel_end <= sel_start) return;
+ 
+         const start_row = self.lineForOffset(sel_start);
+         const end_row = self.lineForOffset(sel_end);
+@@ -1366,7 +1801,7 @@ pub const TextAreaState = struct {
+             }
+ 
+             // Show newline extension for non-end rows (full line selected) or when selection extends past content
+-            if (row != end_row or sel_line_end > line_content.len) {
++            if (newline and (row != end_row or sel_line_end > line_content.len)) {
+                 end_x += 4; // Small extension to show selection includes newline
+             }
+ 
+@@ -1375,7 +1810,7 @@ pub const TextAreaState = struct {
+                 line_y,
+                 @max(2, end_x - start_x), // Min width of 2 for visibility
+                 self.line_height,
+-                self.style.selection_color,
++                color,
+             );
+             try scene.insertQuadClipped(selection_quad);
+         }
+@@ -1415,6 +1850,8 @@ pub const TextAreaState = struct {
+         // Check each character position to find the closest one
+         var col: usize = 0;
+         while (col <= line_content.len) : (col += 1) {
++            // Only codepoint boundaries: a slice ending mid-character would break shaping.
++            if (col < line_content.len and line_content[col] & 0xC0 == 0x80) continue;
+             const text_width = if (col > 0) try self.measureText(text_system, line_content[0..col]) else 0;
+             const distance = @abs(click_offset_x - text_width);
+ 
+@@ -1457,6 +1894,41 @@ pub const TextAreaState = struct {
+ 
+         // Clamp scroll
+         self.scroll_offset_y = std.math.clamp(self.scroll_offset_y, 0, self.maxScrollY());
++        self.reveal_cursor_x = true;
++    }
++
++    /// Rewraps when soft wrap, the width or the font changed the columns that
++    /// fit. Columns come from the width of "0", so wrapping assumes a monospace font.
++    pub fn updateWrap(self: *Self, text_system: *TextSystem) !void {
++        var cols: usize = 0;
++        if (self.soft_wrap) {
++            const char_width = try self.measureText(text_system, "0");
++            // Always leave the scrollbar's lane, so wrapping can't toggle it and rewrap.
++            const bar = &self.scrollbar_style;
++            const lane = if (bar.show_vertical) bar.scrollbar_size + bar.scrollbar_padding * 2 else scroll_margin_x;
++            if (char_width > 0) cols = @max(1, @as(usize, @intFromFloat(@max(0, self.bounds.width - lane) / char_width)));
++        }
++        if (cols == self.wrap_cols) return;
++        self.wrap_cols = cols;
++        self.rebuildLineIndex();
++        self.updateCursorPosition();
++        self.preferred_column = null;
++    }
++
++    /// Measures the visible lines' width, then keeps the cursor (after it
++    /// moved) and the scroll offset within the content horizontally.
++    fn updateScrollX(self: *Self, text_system: *TextSystem, first: usize, last: usize) !void {
++        var widest: f32 = 0;
++        for (first..last) |row| widest = @max(widest, try self.measureText(text_system, self.lineContent(row)));
++        self.content_width = widest;
++        if (self.reveal_cursor_x) {
++            self.reveal_cursor_x = false;
++            const line = self.lineContent(self.cursor_row);
++            const x = try self.measureText(text_system, line[0..@min(self.cursor_col, line.len)]);
++            if (x < self.scroll_offset_x) self.scroll_offset_x = x;
++            if (x + scroll_margin_x > self.scroll_offset_x + self.bounds.width) self.scroll_offset_x = x + scroll_margin_x - self.bounds.width;
++        }
++        self.scroll_offset_x = std.math.clamp(self.scroll_offset_x, 0, self.maxScrollX());
+     }
+ 
+     // =========================================================================
+@@ -1547,6 +2019,17 @@ fn getTimestamp() i64 {
+     return timestamp_ms;
+ }
+ 
++fn getTimestampUs() i64 {
++    const timestamp_us = if (comptime builtin.os.tag == .freestanding and builtin.cpu.arch == .wasm32)
++        @as(i64, @intFromFloat(@import("../platform/web/imports.zig").getFrameTime() * 1000.0))
++    else blk: {
++        const io = std.Io.Threaded.global_single_threaded.io();
++        break :blk std.Io.Timestamp.now(io, .awake).toMicroseconds();
++    };
++    std.debug.assert(timestamp_us >= 0);
++    return timestamp_us;
++}
++
+ // =============================================================================
+ // Tests
+ // =============================================================================
+@@ -1579,6 +2062,25 @@ test "TextAreaState line index" {
+     try std.testing.expectEqual(@as(usize, 2), ta.lineForOffset(14));
+ }
+ 
++test "TextAreaState soft wrap rows" {
++    const allocator = std.testing.allocator;
++    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
++    defer ta.deinit();
++
++    ta.wrap_cols = 6;
++    try ta.setText("hello world\nabcdefghij");
++
++    // Breaks after a space, mid-word without one; the newline still starts a line.
++    try std.testing.expectEqual(@as(usize, 4), ta.lineCount());
++    try std.testing.expectEqualStrings("hello ", ta.lineContent(0));
++    try std.testing.expectEqualStrings("world", ta.lineContent(1));
++    try std.testing.expectEqualStrings("abcdef", ta.lineContent(2));
++    try std.testing.expectEqualStrings("ghij", ta.lineContent(3));
++    try std.testing.expect(!ta.isLineStart(1));
++    try std.testing.expect(ta.isLineStart(2));
++    try std.testing.expectEqual(@as(usize, 1), ta.textLine(3));
++}
++
+ test "TextAreaState line content" {
+     const allocator = std.testing.allocator;
+     var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
+@@ -1658,6 +2160,132 @@ test "TextAreaState controlled binding defers replacement during IME preedit" {
+     try std.testing.expectEqualStrings("external", ta.getText());
+ }
+ 
++test "TextAreaState wheel scrolling eases to its target" {
++    const allocator = std.testing.allocator;
++    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 100 });
++    defer ta.deinit();
++
++    try ta.setText("Line 1\nLine 2\nLine 3");
++    ta.line_height = 100;
++    ta.viewport_height = 100;
++
++    ta.scrollBySmooth(0, -50, 0, false);
++    try std.testing.expect(ta.isScrollAnimating());
++    try std.testing.expectEqual(@as(f32, 0), ta.scroll_offset_y);
++
++    ta.updateSmoothScroll();
++    const first: f32 = ta.scroll_offset_y;
++    try std.testing.expect(first > 0 and first < 50);
++
++    var steps: usize = 0;
++    while (ta.isScrollAnimating() and steps < 500) : (steps += 1) ta.updateSmoothScroll();
++    try std.testing.expect(!ta.isScrollAnimating());
++    try std.testing.expectApproxEqAbs(@as(f32, 50), ta.scroll_offset_y, 0.001);
++
++    // A programmatic scroll cancels the easing and becomes the new target.
++    ta.scrollBySmooth(0, -20, 0, false);
++    try std.testing.expect(ta.isScrollAnimating());
++    ta.scrollBy(0, 0);
++    try std.testing.expect(!ta.isScrollAnimating());
++    ta.updateSmoothScroll();
++    try std.testing.expectApproxEqAbs(@as(f32, 50), ta.scroll_offset_y, 0.001);
++
++    // A direct move (e.g. the caret being revealed) adopts the new offset
++    // instead of being pulled back toward a stale wheel target.
++    ta.scrollBySmooth(0, -20, 0, false);
++    ta.scroll_offset_y += 5;
++    ta.updateSmoothScroll();
++    try std.testing.expect(!ta.isScrollAnimating());
++    try std.testing.expectApproxEqAbs(@as(f32, 55), ta.scroll_offset_y, 0.001);
++    ta.updateSmoothScroll();
++    try std.testing.expectApproxEqAbs(@as(f32, 55), ta.scroll_offset_y, 0.001);
++}
++
++test "TextAreaState continuous scrolling is resampled behind the input" {
++    const allocator = std.testing.allocator;
++    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 100 });
++    defer ta.deinit();
++
++    try ta.setText("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
++    ta.line_height = 100;
++    ta.viewport_height = 100;
++
++    // Trackpad events 8ms apart; a wheel's would become continuous at the second.
++    ta.scrollBySmooth(0, -8, 1_000_000, true);
++    try std.testing.expect(ta.scroll_resampling);
++    ta.scrollBySmooth(0, -8, 1_008_000, true);
++    ta.scrollBySmooth(0, -8, 1_016_000, true);
++
++    // A frame reads the input as it was a lead and the longest recent event
++    // gap before it is shown, averaged over the gap before that; at 1pt/ms
++    // that is half a gap behind the plain read (20, between the last two).
++    const delay = ta.scrollResampleDelayUs();
++    try std.testing.expect(delay > 10_000 and delay < 20_000);
++    ta.frame_time_us = 1_012_000 + delay;
++    ta.updateSmoothScroll();
++    const half_gap: f32 = @floatFromInt(@divTrunc(ta.scroll_gap_us, 2));
++    try std.testing.expectApproxEqAbs(20 - half_gap / 1000, ta.scroll_offset_y, 0.01);
++    try std.testing.expect(ta.isScrollAnimating());
++
++    // Past the last event the offset holds on it while a late event could
++    // still continue the stream; a later event (a VM's jittery 45ms gap)
++    // stays in the stream instead of restarting it.
++    ta.frame_time_us = 1_030_000 + delay;
++    ta.updateSmoothScroll();
++    try std.testing.expectApproxEqAbs(@as(f32, 24), ta.scroll_offset_y, 0.001);
++    try std.testing.expect(ta.isScrollAnimating());
++    ta.scrollBySmooth(0, -8, 1_061_000, false);
++    try std.testing.expect(ta.scroll_resampling);
++    try std.testing.expectEqual(@as(usize, 5), ta.scroll_sample_count);
++
++    // Once the stream has gone quiet, scrolling stops on the last event.
++    ta.frame_time_us = 1_061_000 + TextAreaState.scroll_stream_gap_us + ta.scrollResampleDelayUs();
++    ta.updateSmoothScroll();
++    try std.testing.expectApproxEqAbs(@as(f32, 32), ta.scroll_offset_y, 0.001);
++    try std.testing.expect(!ta.isScrollAnimating());
++}
++
++test "TextAreaState resampling delay follows long gaps gradually" {
++    const allocator = std.testing.allocator;
++    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 100 });
++    defer ta.deinit();
++
++    try ta.setText("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
++    ta.line_height = 100;
++    ta.viewport_height = 100;
++
++    ta.scrollBySmooth(0, -8, 1_000_000, true);
++    ta.scrollBySmooth(0, -8, 1_010_000, true);
++    ta.frame_time_us = 1_016_000;
++    ta.updateSmoothScroll();
++    const before = ta.scroll_delay_us;
++
++    // A late event (30ms) raises the target at once, but the applied delay
++    // grows by at most a quarter of each 16ms frame: no stalled frame.
++    ta.scrollBySmooth(0, -8, 1_040_000, true);
++    try std.testing.expect(ta.scrollResampleDelayUs() >= before + 9_000);
++    ta.frame_time_us = 1_032_000;
++    ta.updateSmoothScroll();
++    try std.testing.expectEqual(before + 4_000, ta.scroll_delay_us);
++
++    // The recent longest gap decays slowly, so regular events keep the margin.
++    const gap = ta.scroll_gap_us;
++    ta.scrollBySmooth(0, -8, 1_050_000, true);
++    try std.testing.expect(ta.scroll_gap_us < gap and ta.scroll_gap_us > gap - 1_000);
++}
++
++test "TextAreaState wrapped rows know their text line" {
++    const allocator = std.testing.allocator;
++    var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 100 });
++    defer ta.deinit();
++
++    ta.wrap_cols = 4;
++    try ta.setText("abcdefgh\nij\nklmnop");
++    try std.testing.expectEqual(@as(usize, 5), ta.lineCount());
++    const lines = [_]usize{ 0, 0, 1, 2, 2 };
++    for (lines, 0..) |line, row| try std.testing.expectEqual(line, ta.textLine(row));
++}
++
+ test "TextAreaState caret blink delay wakes only a focused widget" {
+     // The frame driver arms a timed redraw from this value, so it must be
+     // absent while unfocused, within one interval just after focus, and zero
+diff --git a/src/widgets/text_common.zig b/src/widgets/text_common.zig
+index 9bca58b..d381a34 100644
+--- a/src/widgets/text_common.zig
++++ b/src/widgets/text_common.zig
+@@ -55,29 +55,25 @@ pub fn isWhitespaceAt(text: []const u8, pos: usize) bool {
+     return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+ }
+ 
+-/// Find the previous word boundary
++/// Word characters: letters, digits, `_` and any non-ASCII byte.
++fn isWordAt(text: []const u8, pos: usize) bool {
++    const c = text[pos];
++    return std.ascii.isAlphanumeric(c) or c == '_' or c >= 0x80;
++}
++
++/// Start of the word before `pos`, skipping spaces and punctuation first (macOS ⌥←).
+ pub fn prevWordBoundary(text: []const u8, pos: usize) usize {
+-    if (pos == 0) return 0;
+-    var i = prevCharBoundary(text, pos);
+-    while (i > 0 and isWhitespaceAt(text, i)) {
+-        i = prevCharBoundary(text, i);
+-    }
+-    while (i > 0 and !isWhitespaceAt(text, prevCharBoundary(text, i))) {
+-        i = prevCharBoundary(text, i);
+-    }
++    var i = pos;
++    while (i > 0 and !isWordAt(text, i - 1)) i -= 1;
++    while (i > 0 and isWordAt(text, i - 1)) i -= 1;
+     return i;
+ }
+ 
+-/// Find the next word boundary
++/// End of the word after `pos`, skipping spaces and punctuation first (macOS ⌥→).
+ pub fn nextWordBoundary(text: []const u8, pos: usize) usize {
+-    if (pos >= text.len) return text.len;
+     var i = pos;
+-    while (i < text.len and !isWhitespaceAt(text, i)) {
+-        i = nextCharBoundary(text, i);
+-    }
+-    while (i < text.len and isWhitespaceAt(text, i)) {
+-        i = nextCharBoundary(text, i);
+-    }
++    while (i < text.len and !isWordAt(text, i)) i += 1;
++    while (i < text.len and isWordAt(text, i)) i += 1;
+     return i;
+ }
+ 
+@@ -213,9 +209,12 @@ test "Selection operations" {
+ 
+ test "Word boundaries" {
+     const text = "hello world test";
+-    try std.testing.expectEqual(@as(usize, 6), nextWordBoundary(text, 0));
+-    try std.testing.expectEqual(@as(usize, 12), nextWordBoundary(text, 6));
++    try std.testing.expectEqual(@as(usize, 5), nextWordBoundary(text, 0));
++    try std.testing.expectEqual(@as(usize, 11), nextWordBoundary(text, 5));
+     try std.testing.expectEqual(@as(usize, 6), prevWordBoundary(text, 11));
++    const code = "@import(\"std\");";
++    try std.testing.expectEqual(@as(usize, 9), prevWordBoundary(code, code.len));
++    try std.testing.expectEqual(@as(usize, 7), nextWordBoundary(code, 0));
+ }
+ 
+ test "Bounds.contains: interior point hits" {

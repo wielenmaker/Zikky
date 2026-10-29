@@ -1,0 +1,372 @@
+//! Metal Renderer - Main GPU rendering coordinator
+
+const std = @import("std");
+const objc = @import("objc");
+
+const interface_verify = @import("../../../core/interface_verify.zig");
+const geometry = @import("../../../core/geometry.zig");
+const scene_mod = @import("../../../scene/mod.zig");
+const mtl = @import("api.zig");
+const pipelines = @import("pipelines.zig");
+const render_pass = @import("render_pass.zig");
+const scene_renderer = @import("scene_renderer.zig");
+const post_process = @import("post_process.zig");
+const scissor = @import("scissor.zig");
+const text_pipeline = @import("text.zig");
+const custom_shader = @import("custom_shader.zig");
+const svg_pipeline = @import("svg_pipeline.zig");
+const image_pipeline = @import("image_pipeline.zig");
+const path_pipeline = @import("path_pipeline.zig");
+const polyline_pipeline = @import("polyline_pipeline.zig");
+const point_cloud_pipeline = @import("point_cloud_pipeline.zig");
+const colored_point_cloud_pipeline = @import("colored_point_cloud_pipeline.zig");
+const Atlas = @import("../../../text/mod.zig").Atlas;
+
+pub const Vertex = extern struct {
+    position: [2]f32,
+    color: [4]f32,
+};
+
+pub const ScissorRect = scissor.ScissorRect;
+
+pub const Renderer = struct {
+    // Compile-time interface verification
+    comptime {
+        interface_verify.verifyRendererInterface(@This());
+    }
+
+    device: objc.Object,
+    command_queue: objc.Object,
+    layer: objc.Object,
+    unified_memory: bool,
+
+    // Single unified pipeline for quads + shadows
+    unified_pipeline_state: ?objc.Object,
+    text_pipeline_state: ?text_pipeline.TextPipeline,
+    svg_pipeline_state: ?svg_pipeline.SvgPipeline,
+    image_pipeline_state: ?image_pipeline.ImagePipeline,
+    path_pipeline_state: ?path_pipeline.PathPipeline,
+    polyline_pipeline_state: ?polyline_pipeline.PolylinePipeline,
+    point_cloud_pipeline_state: ?point_cloud_pipeline.PointCloudPipeline,
+    colored_point_cloud_pipeline_state: ?colored_point_cloud_pipeline.ColoredPointCloudPipeline,
+
+    quad_unit_vertex_buffer: ?objc.Object,
+    msaa_texture: ?objc.Object,
+    sample_count: u32,
+
+    size: geometry.Size(f64),
+    scale_factor: f64,
+
+    post_process_state: ?custom_shader.PostProcessState,
+    allocator: std.mem.Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, layer: objc.Object, size: geometry.Size(f64), scale_factor: f64) !Self {
+        const device_ptr = mtl.MTLCreateSystemDefaultDevice() orelse
+            return error.MetalNotAvailable;
+        const device = objc.Object.fromId(device_ptr);
+
+        const unified_memory = device.msgSend(bool, "hasUnifiedMemory", .{});
+        const command_queue = device.msgSend(objc.Object, "newCommandQueue", .{});
+
+        layer.msgSend(void, "setDevice:", .{device.value});
+        layer.msgSend(void, "setDrawableSize:", .{mtl.CGSize{
+            .width = size.width * scale_factor,
+            .height = size.height * scale_factor,
+        }});
+
+        const sample_count: u32 = 4;
+
+        var self = Self{
+            .device = device,
+            .command_queue = command_queue,
+            .layer = layer,
+            .unified_memory = unified_memory,
+            .unified_pipeline_state = null,
+            .text_pipeline_state = null,
+            .svg_pipeline_state = null,
+            .image_pipeline_state = null,
+            .path_pipeline_state = null,
+            .polyline_pipeline_state = null,
+            .point_cloud_pipeline_state = null,
+            .colored_point_cloud_pipeline_state = null,
+            .quad_unit_vertex_buffer = null,
+            .msaa_texture = null,
+            .sample_count = sample_count,
+            .size = size,
+            .scale_factor = scale_factor,
+            .post_process_state = null,
+            .allocator = allocator,
+        };
+
+        self.msaa_texture = try pipelines.createMSAATexture(
+            device,
+            size.width,
+            size.height,
+            scale_factor,
+            sample_count,
+            unified_memory,
+        );
+
+        self.unified_pipeline_state = try pipelines.setupUnifiedPipeline(device, sample_count);
+        self.quad_unit_vertex_buffer = try pipelines.createUnitVertexBuffer(device, unified_memory);
+
+        self.text_pipeline_state = text_pipeline.TextPipeline.init(
+            device,
+            mtl.MTLPixelFormat.bgra8unorm,
+            sample_count,
+        ) catch null;
+
+        // Initialize SVG pipeline
+        self.svg_pipeline_state = svg_pipeline.SvgPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
+
+        // Initialize Image pipeline
+        self.image_pipeline_state = image_pipeline.ImagePipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
+
+        // Initialize Path pipeline
+        self.path_pipeline_state = path_pipeline.PathPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
+
+        // Initialize Polyline pipeline (for efficient chart line rendering)
+        self.polyline_pipeline_state = polyline_pipeline.PolylinePipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
+
+        // Initialize Point Cloud pipeline (for efficient scatter plot rendering)
+        self.point_cloud_pipeline_state = point_cloud_pipeline.PointCloudPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
+
+        // Initialize Colored Point Cloud pipeline (for per-point colored circles)
+        self.colored_point_cloud_pipeline_state = colored_point_cloud_pipeline.ColoredPointCloudPipeline.init(self.allocator, device, @intCast(sample_count)) catch null;
+
+        return self;
+    }
+
+    pub fn deinit(self: *Self) void {
+        if (self.msaa_texture) |tex| tex.release();
+        if (self.unified_pipeline_state) |ps| ps.release();
+        if (self.quad_unit_vertex_buffer) |vb| vb.release();
+        if (self.text_pipeline_state) |*tp| tp.deinit();
+        if (self.svg_pipeline_state) |*sp| sp.deinit();
+        if (self.image_pipeline_state) |*ip| ip.deinit();
+        if (self.path_pipeline_state) |*pp| pp.deinit();
+        if (self.polyline_pipeline_state) |*plp| plp.deinit();
+        if (self.point_cloud_pipeline_state) |*pcp| pcp.deinit();
+        if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp.deinit();
+        if (self.post_process_state) |*pp| pp.deinit();
+        self.command_queue.release();
+        self.device.release();
+    }
+
+    pub fn clear(self: *Self, color: geometry.Color) void {
+        self.renderInternal(color, false);
+    }
+
+    pub fn clearSynchronous(self: *Self, color: geometry.Color) void {
+        self.renderInternal(color, true);
+    }
+
+    pub fn render(self: *Self, clear_color: geometry.Color) void {
+        self.renderInternal(clear_color, false);
+    }
+
+    pub fn renderScene(self: *Self, scene: *const scene_mod.Scene, clear_color: geometry.Color) !void {
+        try self.renderSceneInternal(scene, clear_color, false);
+    }
+
+    pub fn renderSceneSynchronous(self: *Self, scene: *const scene_mod.Scene, clear_color: geometry.Color) !void {
+        try self.renderSceneInternal(scene, clear_color, true);
+    }
+
+    pub fn renderSceneWithPostProcess(
+        self: *Self,
+        scene: *const scene_mod.Scene,
+        clear_color: geometry.Color,
+    ) !void {
+        var pp = &(self.post_process_state orelse {
+            try self.renderScene(scene, clear_color);
+            return;
+        });
+
+        if (!pp.hasShaders()) {
+            try self.renderScene(scene, clear_color);
+            return;
+        }
+
+        if (self.text_pipeline_state) |*tp| tp.nextFrame();
+
+        const width: u32 = @intFromFloat(self.size.width * self.scale_factor);
+        const height: u32 = @intFromFloat(self.size.height * self.scale_factor);
+        try pp.ensureSize(width, height);
+
+        pp.updateTiming();
+        pp.uploadUniforms();
+
+        // Use the new unified single-command-buffer pipeline
+        try post_process.renderFullPipeline(
+            self.command_queue,
+            self.layer,
+            scene,
+            clear_color,
+            self.msaa_texture.?,
+            self.quad_unit_vertex_buffer.?,
+            self.unified_pipeline_state,
+            if (self.text_pipeline_state) |*tp| tp else null,
+            if (self.svg_pipeline_state) |*sp| sp else null,
+            pp,
+            self.size,
+            self.scale_factor,
+        );
+    }
+
+    pub fn initPostProcess(self: *Self) !void {
+        if (self.post_process_state != null) return;
+        self.post_process_state = custom_shader.PostProcessState.init(self.allocator, self.device);
+    }
+
+    pub fn addCustomShader(self: *Self, shader_source: []const u8, name: []const u8) !void {
+        if (self.post_process_state == null) try self.initPostProcess();
+        try self.post_process_state.?.addShader(shader_source, name, mtl.MTLPixelFormat.bgra8unorm, 1);
+    }
+
+    pub fn hasCustomShaders(self: *const Self) bool {
+        if (self.post_process_state) |pp| return pp.hasShaders();
+        return false;
+    }
+
+    pub fn getPostProcess(self: *Self) ?*custom_shader.PostProcessState {
+        return if (self.post_process_state) |*pp| pp else null;
+    }
+
+    pub fn resize(self: *Self, size: geometry.Size(f64), scale_factor: f64) void {
+        self.size = size;
+        self.scale_factor = scale_factor;
+        self.layer.msgSend(void, "setDrawableSize:", .{mtl.CGSize{
+            .width = size.width * scale_factor,
+            .height = size.height * scale_factor,
+        }});
+
+        if (self.msaa_texture) |tex| tex.release();
+        self.msaa_texture = pipelines.createMSAATexture(
+            self.device,
+            size.width,
+            size.height,
+            scale_factor,
+            self.sample_count,
+            self.unified_memory,
+        ) catch return;
+    }
+
+    pub fn updateTextAtlas(self: *Self, atlas: *const Atlas) !void {
+        if (self.text_pipeline_state) |*tp| try tp.updateAtlas(atlas);
+    }
+
+    pub fn prepareSvgAtlas(self: *Self, atlas: *const Atlas) void {
+        if (self.svg_pipeline_state) |*sp| {
+            sp.prepareFrame(atlas);
+        }
+    }
+
+    pub fn prepareImageAtlas(self: *Self, atlas: *const Atlas) void {
+        if (self.image_pipeline_state) |*ip| {
+            ip.prepareFrame(atlas);
+        }
+    }
+
+    pub fn setScissor(encoder: objc.Object, rect: ScissorRect) void {
+        scissor.setScissor(encoder, rect);
+    }
+
+    pub fn boundsToScissorRect(x: f32, y: f32, width: f32, height: f32, viewport_height: f32, scale: f64) ScissorRect {
+        return scissor.boundsToScissorRect(x, y, width, height, viewport_height, scale);
+    }
+
+    pub fn resetScissor(self: *const Self, encoder: objc.Object) void {
+        scissor.resetScissor(encoder, self.size.width, self.size.height, self.scale_factor);
+    }
+
+    pub fn setScissorFromBounds(self: *const Self, encoder: objc.Object, x: f32, y: f32, width: f32, height: f32) void {
+        scissor.setScissorFromBounds(encoder, x, y, width, height, @floatCast(self.size.height), self.scale_factor);
+    }
+
+    fn renderInternal(self: *Self, clear_color: geometry.Color, synchronous: bool) void {
+        const ca_scope = if (synchronous) render_pass.CATransactionScope.begin() else null;
+        defer if (ca_scope) |scope| scope.commit();
+
+        const drawable_info = render_pass.getNextDrawable(self.layer) orelse return;
+        const msaa_tex = self.msaa_texture orelse return;
+
+        const rp = render_pass.createRenderPass(.{
+            .msaa_texture = msaa_tex,
+            .resolve_texture = drawable_info.texture,
+            .clear_color = clear_color,
+        }) orelse return;
+
+        const command_buffer = self.command_queue.msgSend(objc.Object, "commandBuffer", .{});
+        const encoder = render_pass.createEncoder(command_buffer, rp) orelse return;
+
+        if (synchronous) {
+            render_pass.finishAndPresentSync(encoder, command_buffer, drawable_info.drawable);
+        } else {
+            render_pass.finishAndPresent(encoder, command_buffer, drawable_info.drawable);
+        }
+    }
+
+    fn renderSceneInternal(self: *Self, scene: *const scene_mod.Scene, clear_color: geometry.Color, synchronous: bool) !void {
+        if (self.text_pipeline_state) |*tp| tp.nextFrame();
+        if (self.polyline_pipeline_state) |*plp| plp.nextFrame();
+        if (self.point_cloud_pipeline_state) |*pcp| pcp.nextFrame();
+        if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp.nextFrame();
+
+        const shadows = scene.getShadows();
+        const quads = scene.getQuads();
+        const glyphs = scene.getGlyphs();
+        const svg_instances = scene.getSvgInstances();
+        const images = scene.getImages();
+
+        if (shadows.len == 0 and quads.len == 0 and glyphs.len == 0 and svg_instances.len == 0 and images.len == 0) {
+            self.renderInternal(clear_color, synchronous);
+            return;
+        }
+
+        const ca_scope = if (synchronous) render_pass.CATransactionScope.begin() else null;
+        defer if (ca_scope) |scope| scope.commit();
+
+        const drawable_info = render_pass.getNextDrawable(self.layer) orelse return;
+        const msaa_tex = self.msaa_texture orelse return;
+
+        const rp = render_pass.createRenderPass(.{
+            .msaa_texture = msaa_tex,
+            .resolve_texture = drawable_info.texture,
+            .clear_color = clear_color,
+        }) orelse return;
+
+        const command_buffer = self.command_queue.msgSend(objc.Object, "commandBuffer", .{});
+        const encoder = render_pass.createEncoder(command_buffer, rp) orelse return;
+
+        render_pass.setViewport(encoder, self.size.width, self.size.height, self.scale_factor);
+
+        const viewport_size: [2]f32 = .{ @floatCast(self.size.width), @floatCast(self.size.height) };
+        const unit_verts = self.quad_unit_vertex_buffer orelse {
+            encoder.msgSend(void, "endEncoding", .{});
+            return;
+        };
+
+        // Use batch-based rendering for correct z-ordering
+        scene_renderer.drawScene(encoder, scene, .{
+            .unified = self.unified_pipeline_state,
+            .text = if (self.text_pipeline_state) |*tp| tp else null,
+            .svg = if (self.svg_pipeline_state) |*sp| sp else null,
+            .image = if (self.image_pipeline_state) |*ip| ip else null,
+            .path = if (self.path_pipeline_state) |*pp| pp else null,
+            .polyline = if (self.polyline_pipeline_state) |*plp| plp else null,
+            .point_cloud = if (self.point_cloud_pipeline_state) |*pcp| pcp else null,
+            .colored_point_cloud = if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp else null,
+            .mesh_pool = &scene.mesh_pool,
+            .unit_vertex_buffer = unit_verts,
+        }, viewport_size);
+
+        if (synchronous) {
+            render_pass.finishAndPresentSync(encoder, command_buffer, drawable_info.drawable);
+        } else {
+            render_pass.finishAndPresent(encoder, command_buffer, drawable_info.drawable);
+        }
+    }
+};

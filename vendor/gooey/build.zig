@@ -1,0 +1,1702 @@
+const std = @import("std");
+
+const ExampleDefinition = struct {
+    name: []const u8,
+    source: []const u8,
+    metal_hud: bool = false,
+    use_llvm: ?bool = null,
+};
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // Benchmark JSON output directory (optional).
+    // Usage: zig build bench-all -Dbench-json-dir=bench-results
+    const bench_json_dir = b.option([]const u8, "bench-json-dir", "Directory to write benchmark JSON results");
+
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench/json_writer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Benchmark comparison threshold (optional, default 15%).
+    // Usage: zig build bench-compare -Dbench-threshold=10 -- old.json new.json
+    const bench_threshold = b.option(f64, "bench-threshold", "Regression threshold percent for bench-compare (default: 15)");
+
+    // =========================================================================
+    // Benchmark Comparison Tool (platform-independent)
+    // =========================================================================
+
+    const compare_exe = b.addExecutable(.{
+        .name = "bench-compare",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench/compare.zig"),
+            .target = target,
+            .optimize = .fast,
+        }),
+    });
+
+    const compare_step = b.step("bench-compare", "Compare two benchmark JSON files for regressions");
+    const compare_run = b.addRunArtifact(compare_exe);
+    if (bench_threshold) |threshold| {
+        var threshold_buf: [32]u8 = undefined;
+        const threshold_str = std.fmt.bufPrint(&threshold_buf, "{d:.1}", .{threshold}) catch "15.0";
+        compare_run.addArgs(&.{ "--threshold", threshold_str });
+    }
+    compare_run.addPassthruArgs();
+    compare_step.dependOn(&compare_run.step);
+
+    // Unit tests for the comparison/gating logic itself.  Built here
+    // (platform-independent) and wired into each branch's `test` step
+    // below so CI actually exercises the regression gate's own rules.
+    const compare_tests = b.addTest(.{
+        .root_module = compare_exe.root_module,
+    });
+    const run_compare_tests = b.addRunArtifact(compare_tests);
+
+    // Unit tests for the JSON writer + shared timing Sampler (the bench
+    // module root). Wired into each branch's `test` step below so the
+    // harness-facing schema and min/best-of-N accumulator are exercised in
+    // CI without needing a macOS-only benchmark executable to run.
+    const bench_tests = b.addTest(.{
+        .root_module = bench_mod,
+    });
+    const run_bench_tests = b.addRunArtifact(bench_tests);
+
+    // Platform detection
+    const is_native_macos = target.result.os.tag == .macos;
+    const is_native_linux = target.result.os.tag == .linux;
+
+    if (is_native_macos) {
+        // Local, zero-dependency Objective-C runtime wrapper (a trimmed in-tree
+        // port of the subset of mitchellh/zig-objc that Gooey used). The system
+        // `objc` library and `Foundation` framework — where these extern
+        // symbols resolve — are linked here so the module is self-contained.
+        const objc_mod = b.addModule("objc", .{
+            .root_source_file = b.path("src/platform/macos/objc/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        objc_mod.linkSystemLibrary("objc", .{});
+        objc_mod.linkFramework("Foundation", .{});
+
+        // Create the gooey module
+        const mod = b.addModule("gooey", .{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        mod.addImport("objc", objc_mod);
+        linkMacosFrameworks(mod);
+
+        // Benchmarks measure the shipped configuration, so they import a
+        // `gooey` built `.fast` regardless of `-Doptimize`. Safety checks are
+        // emitted per owning module, so importing the default `mod` would time
+        // Debug-checked library code even from a `.fast` benchmark root.
+        const bench_gooey_mod = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = .fast,
+        });
+        bench_gooey_mod.addImport("objc", objc_mod);
+        linkMacosFrameworks(bench_gooey_mod);
+
+        // =========================================================================
+        // Gooey Components Module
+        // =========================================================================
+
+        const components_mod = b.addModule("gooey-components", .{
+            .root_source_file = b.path("components/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        components_mod.addImport("gooey", mod);
+
+        // =========================================================================
+        // Gooey Charts Module
+        // =========================================================================
+
+        const charts_mod = b.addModule("gooey-charts", .{
+            .root_source_file = b.path("charts/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        charts_mod.addImport("gooey", mod);
+
+        // =========================================================================
+        // Gooey Gen UI Module
+        // =========================================================================
+
+        const genui_mod = b.addModule("gooey-genui", .{
+            .root_source_file = b.path("genui/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        genui_mod.addImport("gooey", mod);
+        genui_mod.addImport("gooey-components", components_mod);
+
+        // =========================================================================
+        // Main Demo (Showcase)
+        // =========================================================================
+
+        const exe = b.addExecutable(.{
+            .name = "gooey",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/showcase.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey-components", .module = components_mod },
+                    .{ .name = "objc", .module = objc_mod },
+                },
+            }),
+        });
+
+        // Run step (default demo)
+        const run_step = b.step("run", "Run the showcase demo");
+        const run_cmd = b.addRunArtifact(exe);
+        run_step.dependOn(&run_cmd.step);
+        run_cmd.step.dependOn(b.getInstallStep());
+
+        // Enable Metal HUD for FPS/GPU stats
+        // run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
+
+        run_cmd.addPassthruArgs();
+
+        // =========================================================================
+        // Native Mac Examples
+        // =========================================================================
+
+        const native_examples = [_]ExampleDefinition{
+            .{ .name = "pomodoro", .source = "src/examples/pomodoro.zig" },
+            .{ .name = "animation", .source = "src/examples/animation.zig" },
+            .{ .name = "spaceship", .source = "src/examples/spaceship.zig", .metal_hud = true },
+            .{ .name = "glass", .source = "src/examples/glass.zig" },
+            .{ .name = "window-features", .source = "src/examples/window_features.zig" },
+            .{ .name = "counter", .source = "src/examples/counter.zig" },
+            .{ .name = "todo", .source = "src/examples/todo.zig" },
+            .{ .name = "layout", .source = "src/examples/layout.zig" },
+            .{ .name = "select", .source = "src/examples/select.zig" },
+            .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
+            .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
+            .{ .name = "actions", .source = "src/examples/actions.zig" },
+            .{ .name = "text-debug", .source = "src/examples/text_debug_example.zig" },
+            .{ .name = "images", .source = "src/examples/images.zig" },
+            .{ .name = "tooltip", .source = "src/examples/tooltip.zig" },
+            .{ .name = "modal", .source = "src/examples/modal.zig" },
+            .{ .name = "context-menu", .source = "src/examples/context_menu.zig" },
+            .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
+            .{ .name = "uniform-list", .source = "src/examples/uniform_list_example.zig" },
+            .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
+            .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
+            .{ .name = "tree-example", .source = "src/examples/tree_example.zig" },
+            .{ .name = "a11y-demo", .source = "src/examples/a11y_demo.zig" },
+            .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
+            .{ .name = "form-validation", .source = "src/examples/form_validation.zig" },
+            .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
+            .{ .name = "canvas-demo", .source = "src/examples/canvas_demo.zig" },
+            .{ .name = "disktree", .source = "src/examples/disktree.zig" },
+            .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
+            .{ .name = "new-api-demo", .source = "src/examples/new_api_demo.zig" },
+            .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
+            .{ .name = "multi-window", .source = "src/examples/multi_window.zig" },
+            .{ .name = "ai-canvas-spike", .source = "src/examples/ai_canvas_spike.zig" },
+            .{ .name = "ai-canvas", .source = "src/examples/ai_canvas.zig" },
+        };
+        for (native_examples) |example| {
+            addNativeExample(
+                b,
+                mod,
+                components_mod,
+                objc_mod,
+                target,
+                optimize,
+                example.name,
+                example.source,
+                example.metal_hud,
+            );
+        }
+        addGenuiNativeExample(b, mod, components_mod, genui_mod, objc_mod, target, optimize);
+
+        // =========================================================================
+        // Charts Examples
+        // =========================================================================
+
+        addChartsExample(b, mod, charts_mod, objc_mod, target, optimize, "charts-demo", "src/examples/charts_demo.zig");
+        addChartsExample(b, mod, charts_mod, objc_mod, target, optimize, "dashboard", "src/examples/dashboard.zig");
+        addChartsExample(b, mod, charts_mod, objc_mod, target, optimize, "two-line-charts", "src/examples/two_line_charts.zig");
+
+        // =====================================================================
+        // Tests
+        // =====================================================================
+
+        const mod_tests = b.addTest(.{
+            .root_module = mod,
+        });
+        const run_mod_tests = b.addRunArtifact(mod_tests);
+
+        const components_tests = b.addTest(.{
+            .root_module = components_mod,
+        });
+        const run_components_tests = b.addRunArtifact(components_tests);
+
+        const watcher_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/runtime/watcher.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        const run_watcher_tests = b.addRunArtifact(watcher_tests);
+
+        const exe_tests = b.addTest(.{
+            .root_module = exe.root_module,
+        });
+        const run_exe_tests = b.addRunArtifact(exe_tests);
+
+        // Example tests — keep the README's headline example honest by running
+        // its pure-state unit tests in CI. The example also builds as an
+        // executable via `addNativeExample`/`installArtifact` above, so both
+        // its render paths and its state model are exercised.
+        const todo_example_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/todo.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey-components", .module = components_mod },
+                    .{ .name = "objc", .module = objc_mod },
+                },
+            }),
+        });
+        const run_todo_example_tests = b.addRunArtifact(todo_example_tests);
+
+        const disktree_example_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/disktree.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "gooey", .module = mod }},
+            }),
+        });
+        const run_disktree_example_tests = b.addRunArtifact(disktree_example_tests);
+        const test_disktree_step = b.step("test-disktree", "Run Disk Tree MVP tests");
+        test_disktree_step.dependOn(&run_disktree_example_tests.step);
+
+        // Charts tests
+        const charts_tests = b.addTest(.{
+            .root_module = charts_mod,
+        });
+        const run_charts_tests = b.addRunArtifact(charts_tests);
+
+        const genui_tests = b.addTest(.{ .root_module = genui_mod });
+        const run_genui_tests = b.addRunArtifact(genui_tests);
+        const test_genui_step = b.step("test-genui", "Run gooey-genui tests");
+        test_genui_step.dependOn(&run_genui_tests.step);
+
+        const test_step = b.step("test", "Run tests");
+        test_step.dependOn(&run_mod_tests.step);
+        test_step.dependOn(&run_components_tests.step);
+        test_step.dependOn(&run_watcher_tests.step);
+        test_step.dependOn(&run_exe_tests.step);
+        test_step.dependOn(&run_todo_example_tests.step);
+        test_step.dependOn(&run_disktree_example_tests.step);
+        test_step.dependOn(&run_charts_tests.step);
+        test_step.dependOn(&run_genui_tests.step);
+        test_step.dependOn(&run_compare_tests.step);
+        test_step.dependOn(&run_bench_tests.step);
+
+        // =====================================================================
+        // Layout Fuzz Targets (PR 10)
+        // =====================================================================
+        //
+        // `src/layout/fuzz.zig` declares `test "fuzz: …"` blocks that call
+        // `std.testing.fuzz`. Routing them through `b.addTest` with the
+        // layout module's transitive imports gives us `zig build fuzz` for
+        // a single-shot smoke run, and `zig build fuzz -- --fuzz` for the
+        // 0.16 infinite-mode runner.
+        const fuzz_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/layout/fuzz.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                },
+            }),
+        });
+        const run_fuzz = b.addRunArtifact(fuzz_tests);
+        run_fuzz.addPassthruArgs();
+        const fuzz_step = b.step("fuzz", "Run layout-engine fuzz targets (pass --fuzz for infinite mode)");
+        fuzz_step.dependOn(&run_fuzz.step);
+
+        // =====================================================================
+        // Layout Benchmarks
+        // =====================================================================
+
+        const bench_exe = b.addExecutable(.{
+            .name = "layout-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/layout/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const bench_step = b.step("bench", "Run layout engine benchmarks");
+        const bench_run = b.addRunArtifact(bench_exe);
+        if (bench_json_dir) |dir| {
+            bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        bench_step.dependOn(&bench_run.step);
+
+        // =====================================================================
+        // Context Benchmarks
+        // =====================================================================
+
+        const context_bench_exe = b.addExecutable(.{
+            .name = "context-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/context/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const context_bench_step = b.step("bench-context", "Run context module benchmarks");
+        const context_bench_run = b.addRunArtifact(context_bench_exe);
+        if (bench_json_dir) |dir| {
+            context_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        context_bench_step.dependOn(&context_bench_run.step);
+
+        // =====================================================================
+        // Core Benchmarks
+        // =====================================================================
+
+        const core_bench_exe = b.addExecutable(.{
+            .name = "core-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/core/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const core_bench_step = b.step("bench-core", "Run core module benchmarks");
+        const core_bench_run = b.addRunArtifact(core_bench_exe);
+        if (bench_json_dir) |dir| {
+            core_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        core_bench_step.dependOn(&core_bench_run.step);
+
+        // =====================================================================
+        // Text Benchmarks
+        // =====================================================================
+
+        const text_bench_exe = b.addExecutable(.{
+            .name = "text-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/text/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const text_bench_step = b.step("bench-text", "Run text module benchmarks");
+        const text_bench_run = b.addRunArtifact(text_bench_exe);
+        if (bench_json_dir) |dir| {
+            text_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        text_bench_step.dependOn(&text_bench_run.step);
+
+        // =====================================================================
+        // Scene Benchmarks (data plane: scene build, batch iteration, frame e2e)
+        // =====================================================================
+
+        const scene_bench_exe = b.addExecutable(.{
+            .name = "scene-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/scene/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const scene_bench_step = b.step("bench-scene", "Run scene module (data plane) benchmarks");
+        const scene_bench_run = b.addRunArtifact(scene_bench_exe);
+        if (bench_json_dir) |dir| {
+            scene_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        scene_bench_step.dependOn(&scene_bench_run.step);
+
+        // The scene benchmark's `validate:` tests (primitive counts, batch
+        // coalescing, and the steady-state zero-allocation invariant) only run
+        // in Debug, where assertions are live. Wire them into `test` so the
+        // data-plane zero-alloc guarantee is a CI-gated fact, mirroring how
+        // `bench_tests` / `compare_tests` are already gated below.
+        const scene_bench_tests = b.addTest(.{
+            .root_module = scene_bench_exe.root_module,
+        });
+        const run_scene_bench_tests = b.addRunArtifact(scene_bench_tests);
+        test_step.dependOn(&run_scene_bench_tests.step);
+
+        // =====================================================================
+        // Animation Benchmarks (per-frame spring physics + store dispatch)
+        // =====================================================================
+
+        const animation_bench_exe = b.addExecutable(.{
+            .name = "animation-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/animation/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const animation_bench_step = b.step("bench-animation", "Run animation module benchmarks");
+        const animation_bench_run = b.addRunArtifact(animation_bench_exe);
+        if (bench_json_dir) |dir| {
+            animation_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        animation_bench_step.dependOn(&animation_bench_run.step);
+
+        // The animation benchmark's `validate:` tests (spring physics sanity +
+        // the steady-state zero-allocation invariant) run only in Debug, where
+        // assertions are live. Wire them into `test` so the store's zero-alloc
+        // guarantee is a CI-gated fact, mirroring the scene suite above.
+        const animation_bench_tests = b.addTest(.{
+            .root_module = animation_bench_exe.root_module,
+        });
+        const run_animation_bench_tests = b.addRunArtifact(animation_bench_tests);
+        test_step.dependOn(&run_animation_bench_tests.step);
+
+        // =====================================================================
+        // Element-State Benchmarks (the keyed per-element retained-state pool)
+        // =====================================================================
+
+        const element_states_bench_exe = b.addExecutable(.{
+            .name = "element-states-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/context/element_states_benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const element_states_bench_step = b.step("bench-element-states", "Run element-state pool benchmarks");
+        const element_states_bench_run = b.addRunArtifact(element_states_bench_exe);
+        if (bench_json_dir) |dir| {
+            element_states_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        element_states_bench_step.dependOn(&element_states_bench_run.step);
+
+        // Element-state `validate:` tests (lookup correctness + the steady-state
+        // zero-allocation invariant) run only in Debug — wire them into `test`.
+        const element_states_bench_tests = b.addTest(.{
+            .root_module = element_states_bench_exe.root_module,
+        });
+        const run_element_states_bench_tests = b.addRunArtifact(element_states_bench_tests);
+        test_step.dependOn(&run_element_states_bench_tests.step);
+
+        // =====================================================================
+        // Accessibility Benchmarks (per-frame fingerprint + tree diff)
+        // =====================================================================
+
+        const accessibility_bench_exe = b.addExecutable(.{
+            .name = "accessibility-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/accessibility/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+
+        const accessibility_bench_step = b.step("bench-accessibility", "Run accessibility module benchmarks");
+        const accessibility_bench_run = b.addRunArtifact(accessibility_bench_exe);
+        if (bench_json_dir) |dir| {
+            accessibility_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        accessibility_bench_step.dependOn(&accessibility_bench_run.step);
+
+        // Accessibility `validate:` tests (the diff's dirty/removed counts) run
+        // only in Debug — wire them into `test`.
+        const accessibility_bench_tests = b.addTest(.{
+            .root_module = accessibility_bench_exe.root_module,
+        });
+        const run_accessibility_bench_tests = b.addRunArtifact(accessibility_bench_tests);
+        test_step.dependOn(&run_accessibility_bench_tests.step);
+
+        // =====================================================================
+        // Run All Benchmarks
+        // =====================================================================
+
+        const bench_all_step = b.step("bench-all", "Run all benchmark suites");
+        bench_all_step.dependOn(&bench_run.step);
+        bench_all_step.dependOn(&context_bench_run.step);
+        bench_all_step.dependOn(&core_bench_run.step);
+        bench_all_step.dependOn(&text_bench_run.step);
+        bench_all_step.dependOn(&scene_bench_run.step);
+        bench_all_step.dependOn(&animation_bench_run.step);
+        bench_all_step.dependOn(&element_states_bench_run.step);
+        bench_all_step.dependOn(&accessibility_bench_run.step);
+
+        // =====================================================================
+        // Hot Reload Watcher
+        // =====================================================================
+
+        const watcher_exe = b.addExecutable(.{
+            .name = "gooey-hot",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/runtime/watcher.zig"),
+                .target = target,
+                .optimize = .debug,
+            }),
+        });
+
+        b.installArtifact(watcher_exe);
+
+        const hot_step = b.step("hot", "Run with hot reload");
+
+        const watcher_cmd = b.addRunArtifact(watcher_exe);
+        watcher_cmd.addArg("src");
+        watcher_cmd.addArg("components/src");
+        watcher_cmd.addArg("--");
+
+        // Build scripts can no longer observe passthrough arguments, so the
+        // watcher owns the default: a bare `zig build` becomes `zig build run`.
+        watcher_cmd.addArg("zig");
+        watcher_cmd.addArg("build");
+        watcher_cmd.addPassthruArgs();
+
+        hot_step.dependOn(&watcher_cmd.step);
+    }
+
+    // =============================================================================
+    // Linux Native Builds (Vulkan + Wayland)
+    // =============================================================================
+
+    if (is_native_linux) {
+        // =========================================================================
+        // Shader Compilation (GLSL -> SPIR-V)
+        // =========================================================================
+        // Automatically compiles shaders when GLSL sources change.
+        // Writes directly to source tree so @embedFile can find them.
+        // Requires glslc (from vulkan-tools, shaderc, or Vulkan SDK).
+        //
+        // Pre-compiled .spv files are checked into the repo, so this step
+        // can be skipped in CI or when glslc is not available.
+        //
+        // Install glslc:
+        //   Ubuntu/Debian: sudo apt install glslc
+        //   Arch: sudo pacman -S shaderc
+        //   Or install Vulkan SDK from https://vulkan.lunarg.com/
+
+        // Option to skip shader compilation (useful for CI where glslc isn't available)
+        const skip_shader_compile = b.option(bool, "skip-shader-compile", "Skip shader compilation (use pre-compiled .spv files)") orelse false;
+
+        const compile_shaders_step = b.step("compile-shaders", "Compile GLSL shaders to SPIR-V (requires glslc)");
+
+        if (!skip_shader_compile) {
+            const shader_dir = "src/platform/linux/shaders";
+            const shaders = [_]struct { source: []const u8, output: []const u8, stage: []const u8 }{
+                .{ .source = "unified.vert", .output = "unified.vert.spv", .stage = "vertex" },
+                .{ .source = "unified.frag", .output = "unified.frag.spv", .stage = "fragment" },
+                .{ .source = "text.vert", .output = "text.vert.spv", .stage = "vertex" },
+                .{ .source = "text.frag", .output = "text.frag.spv", .stage = "fragment" },
+                .{ .source = "svg.vert", .output = "svg.vert.spv", .stage = "vertex" },
+                .{ .source = "svg.frag", .output = "svg.frag.spv", .stage = "fragment" },
+                .{ .source = "image.vert", .output = "image.vert.spv", .stage = "vertex" },
+                .{ .source = "image.frag", .output = "image.frag.spv", .stage = "fragment" },
+            };
+
+            // Create shader compilation commands
+            // Writes output directly to source tree for @embedFile compatibility
+            inline for (shaders) |shader| {
+                const compile_cmd = b.addSystemCommand(&.{
+                    "glslc",
+                    "-fshader-stage=" ++ shader.stage,
+                    "-o",
+                    shader_dir ++ "/" ++ shader.output,
+                });
+                // Track input file - triggers recompilation when source changes
+                compile_cmd.addFileArg(b.path(shader_dir ++ "/" ++ shader.source));
+                compile_shaders_step.dependOn(&compile_cmd.step);
+            }
+        }
+
+        // Create the gooey module for Linux
+        const mod = b.addModule("gooey", .{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        linkLinuxGooeyLibraries(mod);
+
+        // Benchmarks measure the shipped configuration; see the macOS branch.
+        const bench_gooey_mod = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = .fast,
+        });
+        linkLinuxGooeyLibraries(bench_gooey_mod);
+
+        // =========================================================================
+        // Gooey Components Module
+        // =========================================================================
+
+        const components_mod = b.addModule("gooey-components", .{
+            .root_source_file = b.path("components/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        components_mod.addImport("gooey", mod);
+
+        // =========================================================================
+        // Gooey Gen UI Module
+        // =========================================================================
+
+        const genui_mod = b.addModule("gooey-genui", .{
+            .root_source_file = b.path("genui/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        genui_mod.addImport("gooey", mod);
+        genui_mod.addImport("gooey-components", components_mod);
+
+        // =========================================================================
+        // Linux Showcase (Main Demo)
+        // =========================================================================
+
+        const exe = b.addExecutable(.{
+            .name = "gooey",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/showcase.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "gooey", .module = mod },
+                    .{ .name = "gooey-components", .module = components_mod },
+                },
+            }),
+        });
+
+        // Link system libraries (Vulkan + Wayland + text rendering)
+        linkLinuxLibraries(exe);
+
+        const install_showcase = b.addInstallArtifact(exe, .{});
+        b.getInstallStep().dependOn(&install_showcase.step);
+
+        // Keep preview builds focused: the default install step also builds
+        // every example, while this step installs only the showcase binary.
+        const showcase_step = b.step("showcase", "Build the showcase demo");
+        showcase_step.dependOn(&install_showcase.step);
+
+        // Ensure shaders are compiled before building executables that @embedFile them
+        // (only if shader compilation is enabled)
+        if (!skip_shader_compile) {
+            exe.step.dependOn(compile_shaders_step);
+        }
+
+        // Run step
+        const run_step = b.step("run", "Run the showcase demo");
+        const run_cmd = b.addRunArtifact(exe);
+        run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
+        run_step.dependOn(&run_cmd.step);
+
+        run_cmd.addPassthruArgs();
+
+        // =========================================================================
+        // Linux Native Examples
+        // =========================================================================
+
+        const linux_examples = [_]ExampleDefinition{
+            .{ .name = "basic", .source = "src/examples/linux_demo.zig" },
+            .{ .name = "text", .source = "src/examples/linux_text_demo.zig" },
+            .{ .name = "file-dialog", .source = "src/examples/linux_file_dialog.zig" },
+            .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
+            .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
+            .{ .name = "animation", .source = "src/examples/animation.zig" },
+            .{ .name = "counter", .source = "src/examples/counter.zig" },
+            .{ .name = "todo", .source = "src/examples/todo.zig" },
+            .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
+            .{ .name = "pomodoro", .source = "src/examples/pomodoro.zig" },
+            .{ .name = "spaceship", .source = "src/examples/spaceship.zig" },
+            .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
+            .{ .name = "layout", .source = "src/examples/layout.zig" },
+            .{ .name = "actions", .source = "src/examples/actions.zig" },
+            .{ .name = "select", .source = "src/examples/select.zig" },
+            .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
+            .{ .name = "tooltip", .source = "src/examples/tooltip.zig" },
+            .{ .name = "modal", .source = "src/examples/modal.zig" },
+            .{ .name = "context-menu", .source = "src/examples/context_menu.zig" },
+            .{ .name = "images", .source = "src/examples/images.zig" },
+            .{ .name = "a11y-demo", .source = "src/examples/a11y_demo.zig" },
+            .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
+            .{
+                .name = "form-validation",
+                .source = "src/examples/form_validation.zig",
+                .use_llvm = true,
+            },
+            .{ .name = "uniform-list", .source = "src/examples/uniform_list_example.zig" },
+            .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
+            .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
+            .{ .name = "disktree", .source = "src/examples/disktree.zig" },
+        };
+        for (linux_examples) |example| {
+            addLinuxExample(
+                b,
+                mod,
+                components_mod,
+                target,
+                optimize,
+                compile_shaders_step,
+                skip_shader_compile,
+                example.name,
+                example.source,
+                example.use_llvm,
+            );
+        }
+        addLinuxGenuiExample(
+            b,
+            mod,
+            components_mod,
+            genui_mod,
+            target,
+            optimize,
+            compile_shaders_step,
+            skip_shader_compile,
+        );
+
+        // =====================================================================
+        // Layout Benchmarks
+        // =====================================================================
+
+        const bench_exe = b.addExecutable(.{
+            .name = "layout-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/layout/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(bench_exe);
+
+        const bench_step = b.step("bench", "Run layout engine benchmarks");
+        const bench_run = b.addRunArtifact(bench_exe);
+        if (bench_json_dir) |dir| {
+            bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        bench_step.dependOn(&bench_run.step);
+
+        // =====================================================================
+        // Context Benchmarks
+        // =====================================================================
+
+        const context_bench_exe = b.addExecutable(.{
+            .name = "context-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/context/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(context_bench_exe);
+
+        const context_bench_step = b.step("bench-context", "Run context module benchmarks");
+        const context_bench_run = b.addRunArtifact(context_bench_exe);
+        if (bench_json_dir) |dir| {
+            context_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        context_bench_step.dependOn(&context_bench_run.step);
+
+        // =====================================================================
+        // Core Benchmarks
+        // =====================================================================
+
+        const core_bench_exe = b.addExecutable(.{
+            .name = "core-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/core/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(core_bench_exe);
+
+        const core_bench_step = b.step("bench-core", "Run core module benchmarks");
+        const core_bench_run = b.addRunArtifact(core_bench_exe);
+        if (bench_json_dir) |dir| {
+            core_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        core_bench_step.dependOn(&core_bench_run.step);
+
+        // =====================================================================
+        // Text Benchmarks
+        // =====================================================================
+
+        const text_bench_exe = b.addExecutable(.{
+            .name = "text-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/text/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(text_bench_exe);
+
+        const text_bench_step = b.step("bench-text", "Run text module benchmarks");
+        const text_bench_run = b.addRunArtifact(text_bench_exe);
+        if (bench_json_dir) |dir| {
+            text_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        text_bench_step.dependOn(&text_bench_run.step);
+
+        // =====================================================================
+        // Scene Benchmarks (data plane: scene build, batch iteration, frame e2e)
+        // =====================================================================
+
+        const scene_bench_exe = b.addExecutable(.{
+            .name = "scene-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/scene/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(scene_bench_exe);
+
+        const scene_bench_step = b.step("bench-scene", "Run scene module (data plane) benchmarks");
+        const scene_bench_run = b.addRunArtifact(scene_bench_exe);
+        if (bench_json_dir) |dir| {
+            scene_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        scene_bench_step.dependOn(&scene_bench_run.step);
+
+        // Scene benchmark `validate:` tests (counts, batch coalescing, and the
+        // steady-state zero-allocation invariant) run only in Debug. The
+        // dependOn is added in the Tests section below, once `test_step` exists.
+        const scene_bench_tests = b.addTest(.{
+            .root_module = scene_bench_exe.root_module,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(scene_bench_tests);
+        if (!skip_shader_compile) {
+            scene_bench_tests.step.dependOn(compile_shaders_step);
+        }
+        const run_scene_bench_tests = b.addRunArtifact(scene_bench_tests);
+
+        // =====================================================================
+        // Animation Benchmarks (per-frame spring physics + store dispatch)
+        // =====================================================================
+
+        const animation_bench_exe = b.addExecutable(.{
+            .name = "animation-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/animation/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(animation_bench_exe);
+
+        const animation_bench_step = b.step("bench-animation", "Run animation module benchmarks");
+        const animation_bench_run = b.addRunArtifact(animation_bench_exe);
+        if (bench_json_dir) |dir| {
+            animation_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        animation_bench_step.dependOn(&animation_bench_run.step);
+
+        // Animation `validate:` tests (physics sanity + steady-state zero-alloc)
+        // run only in Debug. The dependOn is added in the Tests section below.
+        const animation_bench_tests = b.addTest(.{
+            .root_module = animation_bench_exe.root_module,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(animation_bench_tests);
+        if (!skip_shader_compile) {
+            animation_bench_tests.step.dependOn(compile_shaders_step);
+        }
+        const run_animation_bench_tests = b.addRunArtifact(animation_bench_tests);
+
+        // =====================================================================
+        // Element-State Benchmarks (the keyed per-element retained-state pool)
+        // =====================================================================
+
+        const element_states_bench_exe = b.addExecutable(.{
+            .name = "element-states-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/context/element_states_benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(element_states_bench_exe);
+
+        const element_states_bench_step = b.step("bench-element-states", "Run element-state pool benchmarks");
+        const element_states_bench_run = b.addRunArtifact(element_states_bench_exe);
+        if (bench_json_dir) |dir| {
+            element_states_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        element_states_bench_step.dependOn(&element_states_bench_run.step);
+
+        // Element-state `validate:` tests run only in Debug. The dependOn is
+        // added in the Tests section below.
+        const element_states_bench_tests = b.addTest(.{
+            .root_module = element_states_bench_exe.root_module,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(element_states_bench_tests);
+        if (!skip_shader_compile) {
+            element_states_bench_tests.step.dependOn(compile_shaders_step);
+        }
+        const run_element_states_bench_tests = b.addRunArtifact(element_states_bench_tests);
+
+        // =====================================================================
+        // Accessibility Benchmarks (per-frame fingerprint + tree diff)
+        // =====================================================================
+
+        const accessibility_bench_exe = b.addExecutable(.{
+            .name = "accessibility-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/accessibility/benchmarks.zig"),
+                .target = target,
+                .optimize = .fast,
+                .imports = &.{
+                    .{ .name = "gooey", .module = bench_gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(accessibility_bench_exe);
+
+        const accessibility_bench_step = b.step("bench-accessibility", "Run accessibility module benchmarks");
+        const accessibility_bench_run = b.addRunArtifact(accessibility_bench_exe);
+        if (bench_json_dir) |dir| {
+            accessibility_bench_run.addArgs(&.{ "--json-dir", dir });
+        }
+        accessibility_bench_step.dependOn(&accessibility_bench_run.step);
+
+        // Accessibility `validate:` tests run only in Debug. The dependOn is
+        // added in the Tests section below.
+        const accessibility_bench_tests = b.addTest(.{
+            .root_module = accessibility_bench_exe.root_module,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(accessibility_bench_tests);
+        if (!skip_shader_compile) {
+            accessibility_bench_tests.step.dependOn(compile_shaders_step);
+        }
+        const run_accessibility_bench_tests = b.addRunArtifact(accessibility_bench_tests);
+
+        // =====================================================================
+        // Run All Benchmarks
+        // =====================================================================
+
+        const bench_all_step = b.step("bench-all", "Run all benchmark suites");
+        bench_all_step.dependOn(&bench_run.step);
+        bench_all_step.dependOn(&context_bench_run.step);
+        bench_all_step.dependOn(&core_bench_run.step);
+        bench_all_step.dependOn(&text_bench_run.step);
+        bench_all_step.dependOn(&scene_bench_run.step);
+        bench_all_step.dependOn(&animation_bench_run.step);
+        bench_all_step.dependOn(&element_states_bench_run.step);
+        bench_all_step.dependOn(&accessibility_bench_run.step);
+
+        // =====================================================================
+        // Tests
+        // =====================================================================
+
+        const mod_tests = b.addTest(.{
+            .root_module = mod,
+            // Force the LLVM backend on Linux: the self-hosted x86_64 backend
+            // in Zig 0.16 is the default for Debug builds but still segfaults
+            // on larger test binaries (see 0.16.0 release notes — "inferior
+            // machine code quality" and still-stabilizing). Using LLVM trades
+            // a bit of compile time for a backend that actually completes.
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(mod_tests);
+        if (!skip_shader_compile) {
+            mod_tests.step.dependOn(compile_shaders_step);
+        }
+
+        const run_mod_tests = b.addRunArtifact(mod_tests);
+
+        const components_tests = b.addTest(.{
+            .root_module = components_mod,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(components_tests);
+        if (!skip_shader_compile) components_tests.step.dependOn(compile_shaders_step);
+        const run_components_tests = b.addRunArtifact(components_tests);
+
+        const watcher_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/runtime/watcher.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+            .use_llvm = true,
+        });
+        const run_watcher_tests = b.addRunArtifact(watcher_tests);
+
+        const genui_tests = b.addTest(.{
+            .root_module = genui_mod,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(genui_tests);
+        if (!skip_shader_compile) genui_tests.step.dependOn(compile_shaders_step);
+        const run_genui_tests = b.addRunArtifact(genui_tests);
+        const test_genui_step = b.step("test-genui", "Run gooey-genui tests");
+        test_genui_step.dependOn(&run_genui_tests.step);
+
+        const disktree_example_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/examples/disktree.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "gooey", .module = mod }},
+            }),
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(disktree_example_tests);
+        if (!skip_shader_compile) disktree_example_tests.step.dependOn(compile_shaders_step);
+        const run_disktree_example_tests = b.addRunArtifact(disktree_example_tests);
+        const test_disktree_step = b.step("test-disktree", "Run Disk Tree MVP tests");
+        test_disktree_step.dependOn(&run_disktree_example_tests.step);
+
+        const test_step = b.step("test", "Run tests");
+        test_step.dependOn(&run_mod_tests.step);
+        test_step.dependOn(&run_components_tests.step);
+        test_step.dependOn(&run_watcher_tests.step);
+        test_step.dependOn(&run_genui_tests.step);
+        test_step.dependOn(&run_disktree_example_tests.step);
+        test_step.dependOn(&run_compare_tests.step);
+        test_step.dependOn(&run_bench_tests.step);
+        test_step.dependOn(&run_scene_bench_tests.step);
+        test_step.dependOn(&run_animation_bench_tests.step);
+        test_step.dependOn(&run_element_states_bench_tests.step);
+        test_step.dependOn(&run_accessibility_bench_tests.step);
+
+        // =====================================================================
+        // Valgrind Memory Leak Detection
+        // =====================================================================
+        // Valgrind doesn't support modern CPU instructions (AVX, SSE4.2, etc.)
+        // so we need a separate test build with baseline CPU features.
+        // We use native OS/arch but override just the CPU model to keep
+        // system library search paths working.
+
+        const valgrind_target = b.resolveTargetQuery(.{
+            .cpu_model = .baseline, // No AVX/SSE4.2 - valgrind doesn't support them
+        });
+
+        // Create a valgrind-compatible module (baseline CPU, no fancy instructions)
+        const valgrind_mod = b.addModule("gooey-valgrind", .{
+            .root_source_file = b.path("src/root.zig"),
+            .target = valgrind_target,
+            .optimize = .safe, // ReleaseSafe for meaningful stack traces
+        });
+
+        // Separate test artifact for valgrind with baseline CPU
+        const valgrind_tests = b.addTest(.{
+            .root_module = valgrind_mod,
+            // Force LLVM for the same reason as mod_tests above. Valgrind
+            // also requires full DWARF, which the self-hosted backend does
+            // not yet emit completely.
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(valgrind_tests);
+        if (!skip_shader_compile) {
+            valgrind_tests.step.dependOn(compile_shaders_step);
+        }
+
+        const test_valgrind_step = b.step("test-valgrind", "Run tests under valgrind");
+        const valgrind_run = b.addSystemCommand(&.{
+            "valgrind",
+            "--leak-check=full",
+            "--show-leak-kinds=definite,indirect,possible", // Exclude "still reachable" (not real leaks)
+            "--errors-for-leak-kinds=definite,indirect,possible", // Only fail on actual leaks
+            "--num-callers=15", // Enough for useful traces without noise
+            "--error-exitcode=1",
+            "--max-stackframe=4000000", // Zig's large stack frames for async/coroutines
+        });
+        valgrind_run.addFileArg2(b.path("valgrind.supp"), .{ .prefix = "--suppressions=" });
+        valgrind_run.addArtifactArg(valgrind_tests);
+        test_valgrind_step.dependOn(&valgrind_run.step);
+    }
+
+    addWasmBuilds(b);
+    addLinuxTypecheck(b);
+}
+
+// =============================================================================
+// Public API for Consumers
+// =============================================================================
+
+/// Link all platform-specific system dependencies that Gooey requires.
+///
+/// Call this on your executable's compile step so the linker can find
+/// the frameworks / shared libraries Gooey uses under the hood.
+///
+/// Example (consumer build.zig):
+/// ```
+/// const gooey_dep = b.dependency("gooey", .{ .target = target, .optimize = optimize });
+/// const gooey_build = @import("gooey");
+/// exe.root_module.addImport("gooey", gooey_dep.module("gooey"));
+/// gooey_build.linkSystemDeps(exe);
+/// ```
+///
+/// Note: The gooey *module* already declares its framework links, so in many
+/// cases transitive linking handles everything automatically. This helper
+/// exists as a safety net and for non-module usage patterns.
+pub fn linkSystemDeps(step: *std.Build.Step.Compile) void {
+    const mod = step.root_module;
+    const os = step.rootModuleTarget().os.tag;
+
+    if (os == .macos) {
+        mod.linkFramework("AppKit", .{});
+        mod.linkFramework("Foundation", .{});
+        mod.linkFramework("Metal", .{});
+        mod.linkFramework("QuartzCore", .{});
+        mod.linkFramework("CoreFoundation", .{});
+        mod.linkFramework("CoreVideo", .{});
+        mod.linkFramework("CoreText", .{});
+        mod.linkFramework("CoreGraphics", .{});
+        mod.link_libc = true;
+    }
+
+    if (os == .linux) {
+        linkLinuxLibraries(step);
+    }
+}
+
+fn addNativeExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
+    objc_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    name: []const u8,
+    source: []const u8,
+    metal_hud: bool,
+) void {
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
+                .{ .name = "objc", .module = objc_module },
+            },
+        }),
+    });
+
+    b.installArtifact(exe);
+
+    const step_name = b.fmt("run-{s}", .{name});
+    const step_desc = b.fmt("Run the {s} example", .{name});
+    const step = b.step(step_name, step_desc);
+
+    const run_cmd = b.addRunArtifact(exe);
+    if (metal_hud) {
+        run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
+    }
+    run_cmd.addPassthruArgs();
+    step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
+}
+
+fn addGenuiNativeExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
+    genui_module: *std.Build.Module,
+    objc_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+) void {
+    const executable = b.addExecutable(.{
+        .name = "genui-demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/genui_demo.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
+                .{ .name = "gooey-genui", .module = genui_module },
+                .{ .name = "objc", .module = objc_module },
+            },
+        }),
+    });
+    const install = b.addInstallArtifact(executable, .{});
+    b.getInstallStep().dependOn(&install.step);
+    const build_step = b.step("genui-demo", "Build the Gooey Gen UI demo");
+    build_step.dependOn(&install.step);
+    const step = b.step("run-genui-demo", "Run the Gooey Gen UI demo");
+    const run = b.addRunArtifact(executable);
+    step.dependOn(&run.step);
+    run.step.dependOn(b.getInstallStep());
+}
+
+/// Helper to add a charts example with both gooey and gooey-charts modules.
+fn addChartsExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    charts_module: *std.Build.Module,
+    objc_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    name: []const u8,
+    source: []const u8,
+) void {
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-charts", .module = charts_module },
+                .{ .name = "objc", .module = objc_module },
+            },
+        }),
+    });
+
+    b.installArtifact(exe);
+
+    const step_name = b.fmt("run-{s}", .{name});
+    const step_desc = b.fmt("Run the {s} example", .{name});
+    const step = b.step(step_name, step_desc);
+
+    const run_cmd = b.addRunArtifact(exe);
+    step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
+}
+
+// =============================================================================
+// Linux Type Checking (host-independent)
+// =============================================================================
+
+/// Absolute ceiling on the number of Linux typecheck roots. Each root is a
+/// full semantic analysis of the Linux tree, so the count bounds both build
+/// graph size and worst-case step wall time.
+const typecheck_linux_root_count_max: usize = 8;
+
+/// A single semantic-analysis root for the `typecheck-linux` step.
+const TypecheckRoot = struct {
+    /// Source file analyzed as the root module.
+    source: []const u8,
+    /// True when the root is the `gooey` library itself and must be analyzed
+    /// as a test binary so `test {}` blocks are reachable; false when it is an
+    /// example that imports `gooey` as a dependency.
+    as_test: bool,
+};
+
+/// Adds the `typecheck-linux` step: full semantic analysis of the
+/// Linux/Wayland/Vulkan backend from any host, with no linking.
+///
+/// Why this exists: `src/platform/linux/**` is only reachable by the compiler
+/// when the target is Linux, so macOS development hosts (and any CI runner
+/// without a Linux job) could not compile it at all, and Linux-only code could
+/// only be reviewed by hand. Every Linux binding (`vulkan.zig`, `wayland.zig`,
+/// `dbus.zig`, FreeType, libpng) is a plain `extern` declaration, so analysis
+/// needs no C headers, no options, and no downloads.
+///
+/// The step is not wired into `install` or `test` because it re-analyzes the
+/// whole library for a second target, which roughly doubles their wall time.
+/// CI runs it as its own job.
+///
+/// No system libraries are linked. Library resolution happens *before*
+/// semantic analysis, so a single `-lvulkan` would fail on a macOS host and
+/// hide the errors this step exists to find. libc stays enabled because the
+/// native Linux build links it, and analysis must see the same `std.c`
+/// surface; Zig ships cross-compiling glibc stubs. Binary emission is
+/// suppressed by never asking for the emitted binary: `std.Build.Step.Compile`
+/// leaves `generated_bin` null until `getEmittedBin()` is called and then
+/// passes `-fno-emit-bin` itself, so depending on the compile step alone gives
+/// exact `-fno-emit-bin` semantics through the build API.
+fn addLinuxTypecheck(b: *std.Build) void {
+    const step = b.step(
+        "typecheck-linux",
+        "Semantically analyze the Linux backend from any host",
+    );
+
+    const linux_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .abi = .gnu,
+    });
+    std.debug.assert(linux_target.result.os.tag == .linux);
+    std.debug.assert(linux_target.result.cpu.arch == .x86_64);
+
+    // `src/examples/linux_demo.zig` is the Linux entry point and reaches the
+    // window/event/render path. The `src/root.zig` test root covers far more
+    // code: every `test {}` block in the library, plus the `refAllDecls`
+    // discovery chain. `src/examples/glass.zig` is macOS-only at run time but
+    // is the one example that touches glass styling, so typechecking it for
+    // Linux proves the capability gate actually compiles out.
+    const roots = [_]TypecheckRoot{
+        .{ .source = "src/root.zig", .as_test = true },
+        .{ .source = "src/examples/linux_demo.zig", .as_test = false },
+        .{ .source = "src/examples/glass.zig", .as_test = false },
+    };
+    comptime std.debug.assert(roots.len <= typecheck_linux_root_count_max);
+
+    for (roots) |root| {
+        addLinuxTypecheckRoot(b, step, linux_target, root);
+    }
+}
+
+/// Analyzes one root for the Linux target. Split out so `addLinuxTypecheck`
+/// keeps the root list, and this owns per-root module wiring.
+fn addLinuxTypecheckRoot(
+    b: *std.Build,
+    step: *std.Build.Step,
+    target: std.Build.ResolvedTarget,
+    root: TypecheckRoot,
+) void {
+    std.debug.assert(root.source.len > 0);
+    std.debug.assert(target.result.os.tag == .linux);
+
+    const gooey_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = .debug,
+        .link_libc = true,
+    });
+
+    const compile = if (root.as_test) b.addTest(.{
+        .root_module = gooey_mod,
+    }) else blk: {
+        const components_mod = b.createModule(.{
+            .root_source_file = b.path("components/src/root.zig"),
+            .target = target,
+            .optimize = .debug,
+        });
+        components_mod.addImport("gooey", gooey_mod);
+
+        const root_mod = b.createModule(.{
+            .root_source_file = b.path(root.source),
+            .target = target,
+            .optimize = .debug,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_mod },
+                .{ .name = "gooey-components", .module = components_mod },
+            },
+        });
+
+        break :blk b.addExecutable(.{
+            .name = b.fmt("typecheck-linux-{s}", .{std.fs.path.stem(root.source)}),
+            .root_module = root_mod,
+        });
+    };
+
+    // Depend on the compile step *only*. Installing it or calling
+    // `getEmittedBin()` would populate `generated_bin` and re-enable linking.
+    step.dependOn(&compile.step);
+}
+
+fn addWasmBuilds(b: *std.Build) void {
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    const gooey_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = wasm_target,
+        .optimize = .small,
+    });
+    addWasmShaderImports(b, gooey_module);
+    const components_module = b.createModule(.{
+        .root_source_file = b.path("components/src/root.zig"),
+        .target = wasm_target,
+        .optimize = .small,
+    });
+    components_module.addImport("gooey", gooey_module);
+
+    std.debug.assert(wasm_target.result.cpu.arch == .wasm32);
+    std.debug.assert(wasm_target.result.os.tag == .freestanding);
+
+    addWasmExample(b, gooey_module, components_module, wasm_target, .{
+        .step_name = "wasm",
+        .description = "Build showcase for web",
+        .source = "src/examples/showcase.zig",
+        .output_dir = "web",
+        .copy_showcase_assets = true,
+    });
+    addWasmExample(b, gooey_module, components_module, wasm_target, .{
+        .step_name = "wasm-counter",
+        .description = "Build counter example for web",
+        .source = "src/examples/counter.zig",
+        .output_dir = "web/counter",
+        .copy_showcase_assets = false,
+    });
+}
+
+fn addWasmShaderImports(b: *std.Build, module: *std.Build.Module) void {
+    const shaders = [_]struct { name: []const u8, path: []const u8 }{
+        .{ .name = "unified_wgsl", .path = "src/platform/wgpu/shaders/unified.wgsl" },
+        .{ .name = "text_wgsl", .path = "src/platform/wgpu/shaders/text.wgsl" },
+        .{ .name = "svg_wgsl", .path = "src/platform/wgpu/shaders/svg.wgsl" },
+        .{ .name = "image_wgsl", .path = "src/platform/wgpu/shaders/image.wgsl" },
+        .{ .name = "path_wgsl", .path = "src/platform/wgpu/shaders/path.wgsl" },
+        .{ .name = "solid_path_wgsl", .path = "src/platform/wgpu/shaders/path_solid.wgsl" },
+        .{ .name = "polyline_wgsl", .path = "src/platform/wgpu/shaders/polyline.wgsl" },
+        .{ .name = "point_cloud_wgsl", .path = "src/platform/wgpu/shaders/point_cloud.wgsl" },
+    };
+    std.debug.assert(shaders.len == 8);
+    std.debug.assert(shaders[0].name.len > 0);
+    for (shaders) |shader| {
+        module.addAnonymousImport(shader.name, .{
+            .root_source_file = b.path(shader.path),
+        });
+    }
+}
+
+fn addWasmExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
+    wasm_target: std.Build.ResolvedTarget,
+    options: struct {
+        step_name: []const u8,
+        description: []const u8,
+        source: []const u8,
+        output_dir: []const u8,
+        copy_showcase_assets: bool,
+    },
+) void {
+    std.debug.assert(options.step_name.len > 0);
+    std.debug.assert(options.output_dir.len > 0);
+
+    const application_module = b.createModule(.{
+        .root_source_file = b.path(options.source),
+        .target = wasm_target,
+        .optimize = .small,
+        .imports = &.{
+            .{ .name = "gooey", .module = gooey_module },
+            .{ .name = "gooey-components", .module = components_module },
+        },
+    });
+    const executable = b.addExecutable(.{
+        .name = "app",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/platform/web/entry.zig"),
+            .target = wasm_target,
+            .optimize = .small,
+            .imports = &.{.{ .name = "application", .module = application_module }},
+        }),
+    });
+    executable.entry = .disabled;
+    executable.rdynamic = true;
+    executable.stack_size = 1024 * 1024;
+
+    const step = b.step(options.step_name, options.description);
+    step.dependOn(&b.addInstallArtifact(executable, .{
+        .dest_dir = .{ .override = .{ .custom = options.output_dir } },
+    }).step);
+    step.dependOn(&b.addInstallFile(
+        b.path("web/index.html"),
+        b.fmt("{s}/index.html", .{options.output_dir}),
+    ).step);
+    if (options.copy_showcase_assets) {
+        step.dependOn(&b.addInstallFile(
+            b.path("assets/gooey-logo-final.png"),
+            b.fmt("{s}/assets/gooey-logo-final.png", .{options.output_dir}),
+        ).step);
+    }
+}
+
+/// Helper to add a Linux native example with Vulkan + Wayland system libraries.
+fn addLinuxExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    compile_shaders_step: *std.Build.Step,
+    skip_shader_compile: bool,
+    name: []const u8,
+    source: []const u8,
+    use_llvm: ?bool,
+) void {
+    const exe = b.addExecutable(.{
+        .name = b.fmt("gooey-{s}", .{name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
+            },
+        }),
+        .use_llvm = use_llvm,
+    });
+
+    linkLinuxLibraries(exe);
+
+    b.installArtifact(exe);
+    if (!skip_shader_compile) {
+        exe.step.dependOn(compile_shaders_step);
+    }
+
+    const step_name = b.fmt("run-{s}", .{name});
+    const step_desc = b.fmt("Run the {s} example", .{name});
+    const step = b.step(step_name, step_desc);
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
+    run_cmd.addPassthruArgs();
+    step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
+}
+
+fn addLinuxGenuiExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
+    genui_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    compile_shaders_step: *std.Build.Step,
+    skip_shader_compile: bool,
+) void {
+    const executable = b.addExecutable(.{
+        .name = "gooey-genui-demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/genui_demo.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
+                .{ .name = "gooey-genui", .module = genui_module },
+            },
+        }),
+    });
+    linkLinuxLibraries(executable);
+    const install = b.addInstallArtifact(executable, .{});
+    b.getInstallStep().dependOn(&install.step);
+    if (!skip_shader_compile) executable.step.dependOn(compile_shaders_step);
+    const build_step = b.step("genui-demo", "Build the Gooey Gen UI demo");
+    build_step.dependOn(&install.step);
+    const step = b.step("run-genui-demo", "Run the Gooey Gen UI demo");
+    const run = b.addRunArtifact(executable);
+    run.setCwd(b.path("."));
+    step.dependOn(&run.step);
+    run.step.dependOn(b.getInstallStep());
+}
+
+/// Links the macOS frameworks the `gooey` module needs (tests included).
+fn linkMacosFrameworks(mod: *std.Build.Module) void {
+    mod.linkFramework("AppKit", .{});
+    mod.linkFramework("Foundation", .{});
+    mod.linkFramework("Metal", .{});
+    mod.linkFramework("QuartzCore", .{});
+    mod.linkFramework("CoreFoundation", .{});
+    mod.linkFramework("CoreVideo", .{});
+    mod.linkFramework("CoreText", .{});
+    mod.linkFramework("CoreGraphics", .{});
+    mod.link_libc = true;
+}
+
+/// Links the Linux system libraries the `gooey` module needs: Vulkan (plain
+/// extern bindings, so no headers), FreeType/HarfBuzz/Fontconfig for text,
+/// libpng for images, and D-Bus for XDG portal file dialogs.
+fn linkLinuxGooeyLibraries(mod: *std.Build.Module) void {
+    mod.linkSystemLibrary("vulkan", .{});
+    mod.linkSystemLibrary("freetype", .{});
+    mod.linkSystemLibrary("harfbuzz", .{});
+    mod.linkSystemLibrary("fontconfig", .{});
+    mod.linkSystemLibrary("png", .{});
+    mod.linkSystemLibrary("dbus-1", .{});
+    mod.link_libc = true;
+}
+
+/// Links the standard set of Linux system libraries (Vulkan, Wayland, text rendering, etc.)
+fn linkLinuxLibraries(step: *std.Build.Step.Compile) void {
+    const mod = step.root_module;
+    mod.linkSystemLibrary("vulkan", .{});
+    mod.linkSystemLibrary("wayland-client", .{});
+    mod.linkSystemLibrary("freetype", .{});
+    mod.linkSystemLibrary("harfbuzz", .{});
+    mod.linkSystemLibrary("fontconfig", .{});
+    mod.linkSystemLibrary("png", .{});
+    mod.linkSystemLibrary("dbus-1", .{});
+    mod.link_libc = true;
+}
