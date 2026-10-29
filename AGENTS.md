@@ -62,6 +62,13 @@ For components gooey lacks, use [gpui-kit](https://github.com/longbridge/gpui-ki
 - Find (⌘F; `src/find.zig`, bar `src/find_bar.zig`): a pill floating at the top centre of the
   container. Every match is marked (`TextAreaState.marks`), the current one selected; Enter /
   ⇧Enter, ↑ / ↓, ⌘G / ⇧⌘G step, Esc closes. Smart case. ⌘F takes a one-line selection as the query.
+- Command palette (⌘⇧P, View → Command Palette…; `src/palette.zig`, view `src/palette_view.zig`,
+  commands `src/commands.zig`): a rounded card floating at the top centre (no dimming) over the
+  editor: a search pill, the fuzzy-filtered commands (title, shortcut at the right, `›` for a
+  submenu) and a footer of key hints. ↑/↓ (ctrl-n/p) select, Enter or a click runs, Esc or a click
+  outside closes. Enter on a submenu row (Appearance) shows its choices in place of the list,
+  with Back (esc) in the footer. Commands run the same `AppState` methods as their shortcuts;
+  to add one, add a row to `commands.root`. Keys come through `key_capture`, so vim stays out.
 - Quick open (⌘O / ⌘P; `src/picker.zig`, view `src/picker_view.zig`, matcher `src/fuzzy.zig`): the
   window dims under two separate rounded cards, the fuzzy-filtered files (matched letters in the
   accent color) and a highlighted preview headed by the file name. ↑/↓ (ctrl-n/p) select, Enter or
@@ -96,7 +103,7 @@ For components gooey lacks, use [gpui-kit](https://github.com/longbridge/gpui-ki
   closes it when focused; a click focuses it; the wheel scrolls back; drag the gap above it to
   resize; `exit` closes it. Not yet: selection/copy, mouse reporting, bold faces.
 - Keys and clicks (`src/keys.zig`, the window's `key_capture`) go to quick open while it shows,
-  then the terminal, the find bar, and vim.
+  then the command palette, the terminal, the find bar, and vim.
 - ⌘\ or the panel buttons hide/show the sidebar; hidden, the container fills the window and
   its top row holds the show button beside the traffic lights (like Onyx).
 - Editing: ⌘⌫ / ⌥⌫ delete to line start / previous word (⌘⌦ / ⌥⌦ forward); ⌥←/→ stop at
@@ -214,6 +221,8 @@ made so Zikky renders like Onyx (GPUI):
 - Each window sets its own scale on the shared text system and SVG/image atlases as its frame
   begins (upstream set the first window's once, so text on a 2x display drew half-size); their
   keys carry the scale, so a scale change no longer clears them.
+- Mouse presses go to a floating (`z_index > 0`) element over a text area or code editor before
+  the widget under it (the command palette over the editor).
 - Glyph atlas room for 2x text: 1024 skyline nodes (128 cleared the atlas mid-frame), 8192 cached
   glyphs, and a full cache clears instead of dropping entries (they re-rasterized every frame until
   the atlas overflowed). A frame that clears the atlas requests another (`GlyphCache.evictions`):

@@ -194,3 +194,14 @@ Files: `src/text/atlas.zig`, `src/text/cache.zig`*, `src/runtime/frame.zig`*.
   these names decodes the bytes (`loadFromMemory`) instead of reading a file.
 
 Files: `src/image/loader.zig`, `src/runtime/render.zig`*.
+
+## 12. Floating elements take clicks over text widgets
+
+`handleMouseDownEvent` gave a click to any text area or code editor whose bounds held the point
+before it looked at the dispatch tree, so a floating card above the editor (a command palette)
+never got its clicks, and the editor took the focus.
+
+- The hit test runs first; when the hit node or an ancestor is raised (`z_index > 0`), the text
+  area and code editor claims are skipped and the click dispatches to the floating element.
+
+Files: `src/runtime/input.zig`.
