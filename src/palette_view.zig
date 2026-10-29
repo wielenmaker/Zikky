@@ -14,8 +14,10 @@ const Svg = components.Svg;
 const Lucide = components.Lucide;
 
 const width: f32 = 420;
-/// The card's corners, like macOS 27's window corners.
-const radius: f32 = 20;
+// Corner radii to tune: the card (macOS 27's window corners), the search pill, the selected row.
+const card_radius: f32 = 20;
+const pill_radius: f32 = 8;
+const row_radius: f32 = 8;
 const top: f32 = 56;
 const pad: f32 = 8;
 const query_height: f32 = 36;
@@ -46,7 +48,7 @@ pub const PaletteView = struct {
             .width = width,
             .height = height,
             .background = theme.color.background,
-            .corner_radius = radius,
+            .corner_radius = card_radius,
             .border_width = .{ .all = 1 },
             .border_color = theme.color.border.withAlpha(0.8),
             .shadow = .{ .blur_radius = 24, .offset_y = 8, .color = theme.color.card_shadow },
@@ -78,7 +80,7 @@ const Query = struct {
                 .alignment = .{ .cross = .center },
                 .padding = .{ .symmetric = .{ .x = 12, .y = 0 } },
                 .gap = 8,
-                .corner_radius = theme.radius,
+                .corner_radius = pill_radius,
                 .background = theme.color.settings.search_bg,
             }, .{
                 Svg{ .path = Lucide.search, .size = 15, .no_fill = true, .stroke_color = theme.color.foreground, .stroke_width = 1.8 },
@@ -129,7 +131,7 @@ const Row = struct {
             .alignment = .{ .cross = .center },
             .padding = .{ .symmetric = .{ .x = 10, .y = 0 } },
             .gap = 8,
-            .corner_radius = theme.radius,
+            .corner_radius = row_radius,
             .background = if (index == p.selected) theme.color.sidebar_accent else Color.transparent,
             .on_click_handler = cx.commandWith(index, palette.pick),
         }, .{
