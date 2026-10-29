@@ -4,6 +4,7 @@
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
+const titlebar = @import("titlebar.zig");
 const AppState = @import("state.zig").AppState;
 const file_kind = @import("file_kind.zig");
 const IconButton = @import("icon_button.zig").IconButton;
@@ -42,7 +43,7 @@ const Header = struct {
             .height = theme.titlebar_height,
             .direction = .row,
             .alignment = .{ .cross = .center },
-            .padding = .{ .each = .{ .top = 0, .right = 10, .bottom = 0, .left = 84 } },
+            .padding = .{ .each = .{ .top = 0, .right = 10, .bottom = 0, .left = titlebar.left(cx.window()) } },
         }, .{
             IconButton{ .icon = Lucide.panel_left_close, .on_click = cx.command(AppState.toggleSidebar) },
             ui.box(.{ .grow_width = true }, .{}),
