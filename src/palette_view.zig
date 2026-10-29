@@ -14,6 +14,8 @@ const Svg = components.Svg;
 const Lucide = components.Lucide;
 
 const width: f32 = 420;
+/// The card's corners, like macOS 27's window corners.
+const radius: f32 = 20;
 const top: f32 = 56;
 const pad: f32 = 8;
 const query_height: f32 = 36;
@@ -44,7 +46,7 @@ pub const PaletteView = struct {
             .width = width,
             .height = height,
             .background = theme.color.background,
-            .corner_radius = theme.radius_lg,
+            .corner_radius = radius,
             .border_width = .{ .all = 1 },
             .border_color = theme.color.border.withAlpha(0.8),
             .shadow = .{ .blur_radius = 24, .offset_y = 8, .color = theme.color.card_shadow },
