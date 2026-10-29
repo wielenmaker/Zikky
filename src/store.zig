@@ -1,4 +1,4 @@
-//! Small JSON files in ~/Library/Application Support/Slate (settings, session).
+//! Small JSON files in ~/Library/Application Support/Zikky (settings, session).
 
 const std = @import("std");
 
