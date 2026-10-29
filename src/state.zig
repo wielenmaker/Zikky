@@ -17,6 +17,8 @@ const settings_panes = @import("settings_panes.zig");
 const appearance = @import("appearance.zig");
 const terminal = @import("terminal.zig");
 const keys = @import("keys.zig");
+const session = @import("session.zig");
+const save = @import("save.zig");
 
 const TreeListState = gooey.widgets.TreeListState;
 const CodeEditorState = gooey.widgets.CodeEditorState;
@@ -243,6 +245,29 @@ pub const AppState = struct {
         self.closeAll(g);
     }
 
+    /// Rebuilds the tree after a file was created, keeping the expanded folders and the open tabs.
+    pub fn refreshTree(self: *AppState, g: *gooey.Window) void {
+        const a = std.heap.page_allocator;
+        var open: [tabs.max][]const u8 = undefined;
+        for (self.tabs.items(), 0..) |t, i| open[i] = if (t.node == tabs.untitled) "" else self.relativePath(t.node);
+        var expanded: std.ArrayList([]const u8) = .empty;
+        defer expanded.deinit(a);
+        for (1..self.tree.node_count) |n| {
+            const node: u32 = @intCast(n);
+            if (self.tree.nodes[node].is_folder and self.tree.isExpanded(node)) expanded.append(a, self.relativePath(node)) catch {};
+        }
+        self.tree.clear();
+        self.load(g.io);
+        for (1..self.tree.node_count) |n| {
+            const node: u32 = @intCast(n);
+            for (expanded.items) |e| if (std.mem.eql(u8, e, self.relativePath(node))) self.tree.expandNode(node);
+        }
+        self.tree.rebuild();
+        for (self.tabs.items(), open[0..self.tabs.count]) |*t, rel| {
+            if (t.node != tabs.untitled) t.node = session.find(self, rel) orelse 0;
+        }
+    }
+
     /// A node's path from the opened folder; "." for the folder itself (node 0).
     pub fn relativePath(self: *const AppState, node: u32) []const u8 {
         const path = self.paths[node];
@@ -270,6 +295,10 @@ pub const AppState = struct {
         return if (self.tabs.count == 0) null else self.tabs.list[self.tabs.current].node;
     }
 
+    pub fn tabName(self: *const AppState, t: *const tabs.Tab) []const u8 {
+        return if (t.node == tabs.untitled) "Untitled" else self.names[t.node];
+    }
+
     /// The shown editor.
     pub fn editor(self: *AppState, g: *gooey.Window) ?*CodeEditorState {
         return tabs.editor(g, if (self.tabs.active()) |t| t.id() else tabs.empty_id);
@@ -278,7 +307,10 @@ pub const AppState = struct {
     /// Opens a file node in the current tab (or shows its tab if it has one).
     pub fn openNode(self: *AppState, g: *gooey.Window, node: u32) void {
         if (self.tabs.find(node)) |i| return self.selectTab(g, i);
+        self.tabs.adopt(g);
         const t = self.tabs.active() orelse return self.openInNewTab(g, node);
+        // A tab with unsaved text keeps it: the file opens beside it.
+        if (t.node == tabs.untitled or save.unsaved(self, g)) return self.openInNewTab(g, node);
         self.tabs.leave(g);
         tabs.load(t, g, node, self.paths[node]);
     }
@@ -286,6 +318,7 @@ pub const AppState = struct {
     /// Opens a file node in a tab of its own (the current one when all are taken).
     pub fn openInNewTab(self: *AppState, g: *gooey.Window, node: u32) void {
         if (self.tabs.find(node)) |i| return self.selectTab(g, i);
+        self.tabs.adopt(g);
         self.tabs.leave(g);
         if (self.tabs.add(g, node, self.paths[node])) |i| self.tabs.current = i else tabs.load(self.tabs.active().?, g, node, self.paths[node]);
     }
@@ -298,6 +331,10 @@ pub const AppState = struct {
 
     /// A tab's ×.
     pub fn closeTab(self: *AppState, g: *gooey.Window, i: u8) void {
+        save.close(self, g, i);
+    }
+
+    pub fn dropTab(self: *AppState, g: *gooey.Window, i: u8) void {
         if (i == self.tabs.current) self.tabs.leave(g);
         self.tabs.remove(g, i);
     }

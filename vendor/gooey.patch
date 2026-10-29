@@ -191,6 +191,33 @@ index 3f6f814..35665cf 100644
      /// Effective clear color for this configuration.
      ///
      /// A glass style requires a transparent clear so the host-composited
+diff --git a/src/platform/macos/alert.zig b/src/platform/macos/alert.zig
+new file mode 100644
+index 0000000..d4c33a0
+--- /dev/null
++++ b/src/platform/macos/alert.zig
+@@ -0,0 +1,21 @@
++//! A modal NSAlert with a message and buttons.
++
++const objc = @import("objc");
++
++fn string(s: [:0]const u8) objc.c.id {
++    const NSString = objc.getClass("NSString").?;
++    return NSString.msgSend(objc.c.id, "stringWithUTF8String:", .{s.ptr});
++}
++
++/// Returns the index of the clicked button; the first is the default.
++/// It runs a nested event loop, so call it after input handling (`deferCommand`).
++pub fn ask(message: [:0]const u8, info: [:0]const u8, buttons: []const [:0]const u8) ?usize {
++    const NSAlert = objc.getClass("NSAlert") orelse return null;
++    const alert = NSAlert.msgSend(objc.Object, "new", .{});
++    alert.msgSend(void, "setMessageText:", .{string(message)});
++    alert.msgSend(void, "setInformativeText:", .{string(info)});
++    for (buttons) |b| _ = alert.msgSend(objc.c.id, "addButtonWithTitle:", .{string(b)});
++    const first = 1000; // NSAlertFirstButtonReturn
++    const clicked = alert.msgSend(c_long, "runModal", .{});
++    return if (clicked < first) null else @intCast(clicked - first);
++}
 diff --git a/src/platform/macos/appearance.zig b/src/platform/macos/appearance.zig
 new file mode 100644
 index 0000000..f7985d9
@@ -574,14 +601,15 @@ index 0aabba4..08643ea 100644
      \\}
  ;
 diff --git a/src/platform/macos/mod.zig b/src/platform/macos/mod.zig
-index 4c40155..55c61f8 100644
+index 4c40155..8923d7e 100644
 --- a/src/platform/macos/mod.zig
 +++ b/src/platform/macos/mod.zig
-@@ -39,6 +39,8 @@ pub const display_link = @import("display_link.zig");
+@@ -39,6 +39,9 @@ pub const display_link = @import("display_link.zig");
  // System services
  pub const clipboard = @import("clipboard.zig");
  pub const file_dialog = @import("file_dialog.zig");
 +pub const menu = @import("menu.zig");
++pub const alert = @import("alert.zig");
 +pub const appearance = @import("appearance.zig");
  
  // Low-level bindings

@@ -17,6 +17,7 @@ const palette = @import("palette.zig");
 const PaletteView = @import("palette_view.zig").PaletteView;
 const terminal = @import("terminal.zig");
 const welcome = @import("welcome.zig");
+const save = @import("save.zig");
 const assets = @import("assets");
 
 const ui = gooey.ui;
@@ -82,6 +83,7 @@ fn render(cx: *Cx) void {
         ui.onActionHandler(app_menu.OpenFolder, cx.command(AppState.openFolder)),
         ui.onActionHandler(app_menu.OpenSettings, cx.command(settings_window.open)),
         ui.onActionHandler(app_menu.QuickOpen, cx.command(AppState.openPicker)),
+        ui.onActionHandler(app_menu.Save, cx.command(save.run)),
         ui.onActionHandler(find.Open, cx.command(find.open)),
         ui.onActionHandler(palette.Open, cx.command(palette.toggle)),
         ui.onActionHandler(find.Next, cx.command(find.next)),

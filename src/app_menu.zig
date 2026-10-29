@@ -10,6 +10,7 @@ pub const CloseFile = struct {};
 pub const OpenFolder = struct {};
 pub const OpenSettings = struct {};
 pub const QuickOpen = struct {};
+pub const Save = struct {};
 
 const shift_cmd = gooey.input.Modifiers{ .cmd = true, .shift = true };
 const sep = Item{};
@@ -29,6 +30,7 @@ const menus = [_]menu.Menu{
     .{ .title = "File", .items = &.{
         .{ .title = "Quick Open…", .key = "o", .code = .o },
         .{ .title = "Open Folder…", .key = "o", .mods = shift_cmd, .code = .o },
+        .{ .title = "Save", .key = "s", .code = .s },
         sep,
         .{ .title = "Close Tab", .key = "w", .code = .w },
     } },
@@ -65,6 +67,7 @@ pub fn install(g: *gooey.Window) void {
     g.keymap().bind(CloseFile, "cmd-w", null);
     g.keymap().bind(OpenFolder, "cmd-shift-o", null);
     g.keymap().bind(OpenSettings, "cmd-,", null);
+    g.keymap().bind(Save, "cmd-s", null);
     g.keymap().bind(QuickOpen, "cmd-o", null);
     g.keymap().bind(QuickOpen, "cmd-p", null);
 }

@@ -17,6 +17,9 @@ const ids = blk: {
     break :blk a;
 };
 
+/// The node of a tab that has no file yet.
+pub const untitled: u32 = std.math.maxInt(u32);
+
 pub const View = struct { cursor: usize = 0, scroll_y: f32 = 0 };
 
 pub const Tab = struct {
@@ -68,8 +71,23 @@ pub const Tabs = struct {
         std.mem.copyBackwards(Tab, self.list[at + 1 .. self.count + 1], self.list[at..self.count]);
         self.count += 1;
         self.list[at] = .{ .node = node, .slot = slot };
-        load(&self.list[at], g, node, path);
+        if (node != untitled) load(&self.list[at], g, node, path);
         return at;
+    }
+
+    /// Text typed with no tab open becomes an Untitled tab, so opening a file doesn't hide it.
+    pub fn adopt(self: *Tabs, g: *gooey.Window) void {
+        const ce = editor(g, empty_id) orelse return;
+        const text = ce.getText();
+        if (self.count > 0 or text.len == 0) return;
+        const copy = std.heap.page_allocator.dupe(u8, text) catch return;
+        const at = self.add(g, untitled, "") orelse return;
+        self.list[at].source = copy;
+        self.list[at].placeholder = "Type something...";
+        self.list[at].pending = .{ .cursor = ce.text_area.cursor_byte, .scroll_y = ce.text_area.scroll_offset_y };
+        self.current = at;
+        drop(g, empty_id);
+        scratch = "";
     }
 
     pub fn remove(self: *Tabs, g: *gooey.Window, i: u8) void {
@@ -89,6 +107,8 @@ pub const Tabs = struct {
 
 /// The editor shown when no file is open.
 pub const empty_id = "editor";
+/// Its text, which stays while files are open.
+pub var scratch: []const u8 = "";
 
 pub fn editor(g: *gooey.Window, id: []const u8) ?*CodeEditorState {
     return g.widgetState(CodeEditorState, id);
@@ -105,7 +125,11 @@ pub fn load(tab: *Tab, g: *gooey.Window, node: u32, path: []const u8) void {
 fn free(tab: *Tab, g: *gooey.Window) void {
     if (tab.file.len > 0) std.heap.page_allocator.free(tab.file);
     tab.file = "";
+    drop(g, tab.id());
+}
+
+fn drop(g: *gooey.Window, id: []const u8) void {
     // The focus manager keeps a pointer to the focused editor.
-    if (editor(g, tab.id())) |ce| if (ce.isFocused()) g.blurAll();
-    _ = g.element_states.remove(CodeEditorState, gooey.layout.LayoutId.fromString(tab.id()).id);
+    if (editor(g, id)) |ce| if (ce.isFocused()) g.blurAll();
+    _ = g.element_states.remove(CodeEditorState, gooey.layout.LayoutId.fromString(id).id);
 }

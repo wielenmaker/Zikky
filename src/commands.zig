@@ -5,6 +5,7 @@ const gooey = @import("gooey");
 const AppState = @import("state.zig").AppState;
 const Settings = @import("settings.zig").Settings;
 const find = @import("find.zig");
+const save = @import("save.zig");
 const settings_window = @import("settings_window.zig");
 
 const Run = *const fn (*AppState, *gooey.Window) void;
@@ -19,6 +20,7 @@ pub const Command = struct {
 pub const root = [_]Command{
     .{ .title = "Find File…", .keys = "⌘O", .run = AppState.openPicker },
     .{ .title = "Open Folder…", .keys = "⇧⌘O", .run = AppState.openFolder },
+    .{ .title = "Save", .keys = "⌘S", .run = save.run },
     .{ .title = "Close Tab", .keys = "⌘W", .run = AppState.close },
     .{ .title = "Find in File", .keys = "⌘F", .run = find.open },
     .{ .title = "Find Next", .keys = "⌘G", .run = find.next },
