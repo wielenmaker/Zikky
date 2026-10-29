@@ -157,7 +157,9 @@ pub fn step(s: *AppState, g: *gooey.Window, dir: i2) void {
     const ce = s.editor(g) orelse return;
     const ta = &ce.text_area;
     if (!f.open) {
-        const m = nextFrom(ta.getText(), ta.cursor_byte, dir > 0) orelse return;
+        // Upward starts before the selected match, not at its end.
+        const from = if (dir < 0) @min(ta.selection_anchor orelse ta.cursor_byte, ta.cursor_byte) else ta.cursor_byte;
+        const m = nextFrom(ta.getText(), from, dir > 0) orelse return;
         ta.select(m.start, m.end);
         return;
     }
