@@ -4,6 +4,7 @@ const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
+const field = @import("field.zig");
 const settings_actions = @import("settings_actions.zig");
 const panes = @import("settings_panes.zig");
 const clickable = @import("clickable.zig");
@@ -59,16 +60,11 @@ const Search = struct {
             .gap = 4,
         }, .{
             Svg{ .path = Lucide.search, .size = 14, .no_fill = true, .stroke_color = theme.color.muted, .stroke_width = 1.6 },
-            ui.input("settings-search", .{
+            field.bare("settings-search", .{
                 .bind = &self.s.settings_query,
                 .placeholder = "Search Settings",
-                .fill_width = true,
                 .height = 24,
-                .padding = 2,
-                .background = gooey.Color.transparent,
-                .border_width = 0,
                 .text_color = theme.color.settings.label,
-                .placeholder_color = theme.color.muted,
                 .cursor_color = theme.color.settings.accent,
             }),
         }));

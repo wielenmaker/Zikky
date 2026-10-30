@@ -5,12 +5,12 @@ const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
+const field = @import("field.zig");
 const find = @import("find.zig");
 const clickable = @import("clickable.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Color = gooey.Color;
 const Svg = components.Svg;
 const Lucide = components.Lucide;
 
@@ -41,18 +41,7 @@ pub const FindBar = struct {
             .gap = 4,
             .floating = .{ .element_anchor = .center_top, .parent_anchor = .center_top, .offset_y = 10, .z_index = 10 },
         }, .{
-            ui.input(find.query_id, .{
-                .bind = &f.query,
-                .placeholder = "Find",
-                .width = query_width,
-                .height = 24,
-                .padding = 2,
-                .background = Color.transparent,
-                .border_width = 0,
-                .text_color = c.foreground,
-                .placeholder_color = c.muted,
-                .cursor_color = c.primary,
-            }),
+            field.bare(find.query_id, .{ .bind = &f.query, .placeholder = "Find", .fill_width = false, .width = query_width, .height = 24 }),
             ui.box(.{ .width = count_width, .alignment = .{ .main = .end }, .direction = .row }, .{
                 ui.when(f.query.len > 0, .{ui.textFmt("{d}/{d}", .{ if (f.current) |i| i + 1 else 0, f.count }, .{ .size = 12, .color = c.muted })}),
             }),

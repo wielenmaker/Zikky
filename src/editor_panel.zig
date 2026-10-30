@@ -2,9 +2,9 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
-const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
+const code_style = @import("code_style.zig");
 const picker = @import("picker.zig");
 const TabBar = @import("tab_bar.zig").TabBar;
 const vim = @import("vim.zig");
@@ -17,8 +17,6 @@ const TermPanel = @import("term_view.zig").TermPanel;
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-const Color = gooey.Color;
-const CodeEditor = components.CodeEditor;
 
 const padding: f32 = 16;
 
@@ -88,11 +86,10 @@ const Container = struct {
             .padding = .{ .each = .{ .top = theme.editor_top, .right = 0, .bottom = padding, .left = 0 } },
         }, .{ui.when(!s.picker.open, .{
             // Hidden under quick open: text widgets draw above floating cards.
-            CodeEditor{
+            code_style.editor(.{
                 .id = id,
                 .bind = if (tab) |t| &t.source else &tabs.scratch,
                 .placeholder = if (tab) |t| t.placeholder else "Type something...",
-                .placeholder_color = theme.color.muted,
                 // Full width: the scrollbar's lane (6 + 5 × 2) is where long lines wrap,
                 // 16pt before the right edge, with the bar 5pt from it.
                 .width = self.width - 2,
@@ -100,26 +97,13 @@ const Container = struct {
                 .show_line_numbers = s.settings.line_numbers,
                 .height = self.height - 2 - theme.editor_top - padding,
                 .highlighter = if (tab) |t| syntax.forName(s.tabName(t)) else null,
-                .padding = 0,
                 // Room for four digits at any zoom, within gooey's gutter cap.
                 .gutter_width = @min(gooey.widgets.code_editor_state.MAX_GUTTER_WIDTH, 48 * s.settings.font_size / theme.mono_font_size),
-                .show_status_bar = false,
                 .language_mode = "Zig",
-                .border_width = 0,
-                .background = Color.transparent,
-                .gutter_background = Color.transparent,
-                .gutter_separator_color = Color.transparent,
                 .current_line_background = theme.color.current_line,
-                .scrollbar_width = 6,
-                .scrollbar_padding = 5,
-                .scrollbar_track_color = Color.transparent,
-                .scrollbar_thumb_color = theme.color.scrollbar,
-                .text_color = theme.color.foreground,
-                .line_number_color = theme.color.muted.withAlpha(0.6),
                 .current_line_number_color = theme.color.foreground,
                 .cursor_color = theme.color.primary,
-                .selection_color = theme.color.primary.withAlpha(0.18),
-            },
+            }),
             ui.when(s.find.open, .{FindBar{}}),
         }), ui.when(save.unsaved(s, cx.window()), .{save.Badge{}})}));
         if (!s.picker.open) if (tabs.editor(cx.window(), id)) |ce| prepare(s, cx.window(), ce, id);

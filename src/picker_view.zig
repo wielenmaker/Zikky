@@ -11,13 +11,15 @@ const fuzzy = @import("fuzzy.zig");
 const file_kind = @import("file_kind.zig");
 const FileIcon = @import("file_icon.zig").FileIcon;
 const clickable = @import("clickable.zig");
+const card = @import("card.zig");
+const field = @import("field.zig");
+const code_style = @import("code_style.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Color = gooey.Color;
 const Svg = components.Svg;
 const Lucide = components.Lucide;
-const CodeEditor = components.CodeEditor;
 
 const margin: f32 = 32;
 const gap: f32 = 10;
@@ -59,24 +61,10 @@ const Card = struct {
     content: enum { list, preview },
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .width = self.width,
-            .height = self.height,
-            .background = theme.color.background,
-            .corner_radius = theme.radius_lg,
-            .border_width = .{ .all = 1 },
-            .border_color = theme.color.border.withAlpha(0.8),
-            .shadow = .{ .blur_radius = 24, .offset_y = 8, .color = theme.color.card_shadow },
-        }, .{
-            ui.when(self.content == .list, .{ Query{}, Divider{}, List{ .height = self.height - header_height - 2 } }),
-            ui.when(self.content == .preview, .{ Title{}, Divider{}, Preview{ .width = self.width - 2, .height = self.height - header_height - 2 } }),
+        cx.render(card.box(.{ .width = self.width, .height = self.height }, .{
+            ui.when(self.content == .list, .{ Query{}, card.Divider{}, List{ .height = self.height - header_height - 2 } }),
+            ui.when(self.content == .preview, .{ Title{}, card.Divider{}, Preview{ .width = self.width - 2, .height = self.height - header_height - 2 } }),
         }));
-    }
-};
-
-const Divider = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .fill_width = true, .height = 1, .background = theme.color.border }, .{}));
     }
 };
 
@@ -93,18 +81,7 @@ const Query = struct {
             .gap = 6,
         }, .{
             Svg{ .path = Lucide.chevron_right, .size = 16, .no_fill = true, .stroke_color = theme.color.primary, .stroke_width = 2 },
-            ui.input("picker-query", .{
-                .bind = &p.query,
-                .placeholder = "Search files",
-                .fill_width = true,
-                .height = 26,
-                .padding = 2,
-                .background = Color.transparent,
-                .border_width = 0,
-                .text_color = theme.color.foreground,
-                .placeholder_color = theme.color.muted,
-                .cursor_color = theme.color.primary,
-            }),
+            field.bare("picker-query", .{ .bind = &p.query, .placeholder = "Search files" }),
             ui.textFmt("{d}/{d}", .{ p.count, p.total }, .{ .size = 13, .color = theme.color.muted }),
         }));
         if (p.focus_query) {
@@ -211,32 +188,14 @@ const Preview = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
         cx.render(ui.box(.{ .padding = .{ .each = .{ .top = 8, .right = 0, .bottom = 8, .left = 0 } } }, .{
-            CodeEditor{
+            code_style.editor(.{
                 .id = "preview",
                 .placeholder = s.picker.preview.message,
-                .placeholder_color = theme.color.muted,
                 .width = self.width,
                 .height = self.height - 16,
                 .soft_wrap = true,
                 .highlighter = picker.highlighter(s),
-                .padding = 0,
-                .gutter_width = 48,
-                .show_status_bar = false,
-                .border_width = 0,
-                .background = Color.transparent,
-                .gutter_background = Color.transparent,
-                .gutter_separator_color = Color.transparent,
-                .current_line_background = Color.transparent,
-                .scrollbar_width = 6,
-                .scrollbar_padding = 5,
-                .scrollbar_track_color = Color.transparent,
-                .scrollbar_thumb_color = theme.color.scrollbar,
-                .text_color = theme.color.foreground,
-                .line_number_color = theme.color.muted.withAlpha(0.6),
-                .current_line_number_color = theme.color.muted.withAlpha(0.6),
-                .cursor_color = Color.transparent,
-                .selection_color = theme.color.primary.withAlpha(0.18),
-            },
+            }),
         }));
         picker.loadPreview(s, cx.window());
     }

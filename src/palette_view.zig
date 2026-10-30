@@ -5,6 +5,8 @@ const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
+const card = @import("card.zig");
+const field = @import("field.zig");
 const palette = @import("palette.zig");
 const clickable = @import("clickable.zig");
 
@@ -45,27 +47,17 @@ pub const PaletteView = struct {
             .floating = .{ .z_index = 200 },
             .on_click_handler = cx.command(palette.close),
         }, .{}));
-        cx.render(ui.box(.{
+        cx.render(card.box(.{
             .width = width,
             .height = height,
-            .background = theme.color.background,
             .corner_radius = card_radius,
-            .border_width = .{ .all = 1 },
-            .border_color = theme.color.border.withAlpha(0.8),
-            .shadow = .{ .blur_radius = 24, .offset_y = 8, .color = theme.color.card_shadow },
-            .floating = .{ .element_anchor = .center_top, .parent_anchor = .center_top, .offset_y = top, .z_index = 201 },
+            .floating = ui.Floating{ .element_anchor = .center_top, .parent_anchor = .center_top, .offset_y = top, .z_index = 201 },
         }, .{
             Query{},
             List{ .height = list_height },
-            Divider{},
+            card.Divider{},
             Footer{},
         }));
-    }
-};
-
-const Divider = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .fill_width = true, .height = 1, .background = theme.color.border }, .{}));
     }
 };
 
@@ -85,18 +77,7 @@ const Query = struct {
                 .background = theme.color.settings.search_bg,
             }, .{
                 Svg{ .path = Lucide.search, .size = 15, .no_fill = true, .stroke_color = theme.color.foreground, .stroke_width = 1.8 },
-                ui.input(palette.query_id, .{
-                    .bind = &p.query,
-                    .placeholder = if (p.sub) |c| c.title else "Search commands",
-                    .fill_width = true,
-                    .height = 26,
-                    .padding = 2,
-                    .background = Color.transparent,
-                    .border_width = 0,
-                    .text_color = theme.color.foreground,
-                    .placeholder_color = theme.color.muted,
-                    .cursor_color = theme.color.primary,
-                }),
+                field.bare(palette.query_id, .{ .bind = &p.query, .placeholder = if (p.sub) |c| c.title else "Search commands" }),
             }),
         }));
         if (p.focus_query) {
