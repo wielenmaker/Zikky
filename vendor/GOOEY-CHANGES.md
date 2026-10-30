@@ -222,3 +222,15 @@ hide button over the file tree) went to the invisible row.
   inside it.
 
 Files: `src/layout/engine.zig`, `src/context/dispatch.zig`, `src/runtime/frame.zig`*.
+
+## 14. Caret glide
+
+The caret jumped to each new position; Zikky can ease it there instead, like Zed or VS Code's
+smooth caret.
+
+- `TextAreaState.cursor_glide`: the cursor eases out over 80ms from where it was drawn to its
+  new position, kept in content coordinates so scrolling doesn't glide it. It is placed even
+  while blinked off, and one that wasn't shown (unfocused, composing) appears without gliding.
+- `TextAreaState.cursor_gliding`: the frame driver keeps frames coming until it settles.
+
+Files: `src/widgets/text_area_state.zig`*, `src/runtime/frame.zig`*.

@@ -53,6 +53,7 @@ pub const panes = [_]Pane{
             .{ .label = "Vim mode", .control = .{ .toggle = .vim_mode } },
             .{ .label = "Wrap long lines", .control = .{ .toggle = .soft_wrap } },
             .{ .label = "Show line numbers", .control = .{ .toggle = .line_numbers } },
+            .{ .label = "Smooth caret", .control = .{ .toggle = .smooth_caret } },
         } },
     } },
     .{ .name = "Files", .icon = Lucide.folder, .tint = Color.hex(0xf59e0b), .sections = &.{

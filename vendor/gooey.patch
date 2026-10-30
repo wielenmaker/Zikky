@@ -1203,7 +1203,7 @@ index 11b2615..68f018d 100644
      \\    }
      \\}
 diff --git a/src/runtime/frame.zig b/src/runtime/frame.zig
-index c747a60..980843b 100644
+index c747a60..2e5a1ab 100644
 --- a/src/runtime/frame.zig
 +++ b/src/runtime/frame.zig
 @@ -84,6 +84,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
@@ -1310,7 +1310,7 @@ index c747a60..980843b 100644
      ta_widget.setPlaceholder(pending.style.placeholder);
 +    ta_widget.frame_time_us = frameTimeUs(window);
      try ta_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
-+    if (ta_widget.isScrollAnimating()) window.requestRender();
++    if (ta_widget.isScrollAnimating() or ta_widget.cursor_gliding) window.requestRender();
      if (ta_widget.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
  }
  
@@ -1354,8 +1354,8 @@ index c747a60..980843b 100644
 +    defer window.resources.text_system.useFont(0);
 +    ce_widget.text_area.frame_time_us = frameTimeUs(window);
      try ce_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
-+    // Wheel scrolling eases over several frames; keep them coming until it settles.
-+    if (ce_widget.text_area.isScrollAnimating()) window.requestRender();
++    // Wheel scrolling and the cursor glide ease over several frames; keep them coming until they settle.
++    if (ce_widget.text_area.isScrollAnimating() or ce_widget.text_area.cursor_gliding) window.requestRender();
      // The editor's caret is its embedded text area's, blink timer included.
      if (ce_widget.text_area.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
  }
@@ -2659,7 +2659,7 @@ index 50c816a..d79edcf 100644
          }) catch "Ln ?, Col ?";
  
 diff --git a/src/widgets/text_area_state.zig b/src/widgets/text_area_state.zig
-index 3833bf0..4f0b36b 100644
+index 3833bf0..1552fee 100644
 --- a/src/widgets/text_area_state.zig
 +++ b/src/widgets/text_area_state.zig
 @@ -94,6 +94,32 @@ pub const Style = struct {
@@ -2704,16 +2704,24 @@ index 3833bf0..4f0b36b 100644
  
      /// Cursor position as byte offset into buffer
      cursor_byte: usize = 0,
-@@ -146,6 +174,8 @@ pub const TextAreaState = struct {
+@@ -146,6 +174,16 @@ pub const TextAreaState = struct {
      /// Preferred column for up/down navigation (preserves horizontal position)
      /// Stored as byte offset within line
      preferred_column: ?usize = null,
 +    /// Draw the cursor as a block over the character (vim's normal mode).
 +    cursor_block: bool = false,
++    /// Ease the cursor to each new position instead of jumping.
++    cursor_glide: bool = false,
++    /// Where the cursor is headed and where it started, relative to that,
++    /// in content coordinates so scrolling doesn't glide it.
++    glide_target: ?[2]f32 = null,
++    glide_offset: [2]f32 = .{ 0, 0 },
++    glide_start_us: i64 = 0,
++    cursor_gliding: bool = false,
  
      // IME composition state
      preedit_buffer: std.ArrayList(u8),
-@@ -158,8 +188,55 @@ pub const TextAreaState = struct {
+@@ -158,8 +196,55 @@ pub const TextAreaState = struct {
  
      // Scroll state
      scroll_offset_x: f32 = 0,
@@ -2769,7 +2777,7 @@ index 3833bf0..4f0b36b 100644
      // Layout info (set during render)
      line_height: f32 = 0,
      viewport_height: f32 = 0,
-@@ -167,6 +244,15 @@ pub const TextAreaState = struct {
+@@ -167,6 +252,15 @@ pub const TextAreaState = struct {
      // Placeholder text
      placeholder: []const u8 = "",
  
@@ -2785,7 +2793,7 @@ index 3833bf0..4f0b36b 100644
      // Callbacks
      on_change: ?*const fn (*TextAreaState) void = null,
  
-@@ -179,6 +265,10 @@ pub const TextAreaState = struct {
+@@ -179,6 +273,10 @@ pub const TextAreaState = struct {
      /// Edit history for undo/redo (heap-allocated, ~512KB)
      edit_history: ?*EditHistory = null,
  
@@ -2796,7 +2804,7 @@ index 3833bf0..4f0b36b 100644
      const Self = @This();
  
      pub const BindingSync = enum {
-@@ -216,6 +306,7 @@ pub const TextAreaState = struct {
+@@ -216,6 +314,7 @@ pub const TextAreaState = struct {
      pub fn deinit(self: *Self) void {
          self.buffer.deinit(self.allocator);
          self.line_starts.deinit(self.allocator);
@@ -2804,7 +2812,7 @@ index 3833bf0..4f0b36b 100644
          self.preedit_buffer.deinit(self.allocator);
          if (self.edit_history) |h| h.destroy(self.allocator);
      }
-@@ -252,6 +343,7 @@ pub const TextAreaState = struct {
+@@ -252,6 +351,7 @@ pub const TextAreaState = struct {
          self.cursor_byte = @min(self.cursor_byte, self.buffer.items.len);
          self.updateCursorPosition();
          self.selection_anchor = null;
@@ -2812,7 +2820,7 @@ index 3833bf0..4f0b36b 100644
      }
  
      /// Reconcile a controlled binding while preserving valid editing offsets.
-@@ -295,18 +387,57 @@ pub const TextAreaState = struct {
+@@ -295,18 +395,57 @@ pub const TextAreaState = struct {
      // Line Index Management
      // =========================================================================
  
@@ -2843,14 +2851,14 @@ index 3833bf0..4f0b36b 100644
 +                self.line_starts.append(self.allocator, i) catch return;
 +                if (wrapping) self.row_lines.append(self.allocator, line) catch return;
 +                continue;
-+            }
+             }
 +            if (self.wrap_cols > 0 and cols == self.wrap_cols) {
 +                const brk = after_space orelse i;
 +                self.line_starts.append(self.allocator, brk) catch return;
 +                self.row_lines.append(self.allocator, line) catch return;
 +                cols = std.unicode.utf8CountCodepoints(text[brk..i]) catch i - brk;
 +                after_space = null;
-             }
++            }
 +            if (text[i] == ' ') after_space = i + 1;
 +            cols += 1;
 +            i = common.nextCharBoundary(text, i);
@@ -2874,7 +2882,7 @@ index 3833bf0..4f0b36b 100644
      /// Get the number of lines
      pub fn lineCount(self: *const Self) usize {
          return self.line_starts.items.len;
-@@ -342,8 +473,9 @@ pub const TextAreaState = struct {
+@@ -342,8 +481,9 @@ pub const TextAreaState = struct {
      /// Get the byte offset for the end of a line (before \n or end of buffer)
      pub fn lineEndOffset(self: *const Self, row: usize) usize {
          if (row + 1 < self.line_starts.items.len) {
@@ -2886,7 +2894,7 @@ index 3833bf0..4f0b36b 100644
          }
          return self.buffer.items.len;
      }
-@@ -374,7 +506,7 @@ pub const TextAreaState = struct {
+@@ -374,7 +514,7 @@ pub const TextAreaState = struct {
              }
          }
  
@@ -2895,7 +2903,7 @@ index 3833bf0..4f0b36b 100644
              // No newlines inserted, just shift subsequent line starts
              for (self.line_starts.items) |*start| {
                  if (start.* > insert_pos) {
-@@ -422,11 +554,223 @@ pub const TextAreaState = struct {
+@@ -422,11 +562,223 @@ pub const TextAreaState = struct {
          return focus_mod.Focusable.fromInstance(Self, self);
      }
  
@@ -3120,7 +3128,7 @@ index 3833bf0..4f0b36b 100644
      pub fn getBounds(self: *const Self) struct { x: f32, y: f32, width: f32, height: f32 } {
          return .{
              .x = self.bounds.x,
-@@ -531,7 +875,16 @@ pub const TextAreaState = struct {
+@@ -531,7 +883,16 @@ pub const TextAreaState = struct {
  
          switch (code) {
              .delete => {
@@ -3138,7 +3146,7 @@ index 3833bf0..4f0b36b 100644
                  if (self.hasSelection()) {
                      self.deleteSelectionWithHistory();
                  } else if (self.cursor_byte > 0) {
-@@ -563,6 +916,16 @@ pub const TextAreaState = struct {
+@@ -563,6 +924,16 @@ pub const TextAreaState = struct {
                  }
              },
              .forward_delete => {
@@ -3155,7 +3163,7 @@ index 3833bf0..4f0b36b 100644
                  if (self.hasSelection()) {
                      self.deleteSelectionWithHistory();
                  } else if (self.cursor_byte < self.buffer.items.len) {
-@@ -786,6 +1149,16 @@ pub const TextAreaState = struct {
+@@ -786,6 +1157,16 @@ pub const TextAreaState = struct {
      // Selection Helpers
      // =========================================================================
  
@@ -3172,7 +3180,7 @@ index 3833bf0..4f0b36b 100644
      pub fn hasSelection(self: *const Self) bool {
          return self.selection_anchor != null and self.selection_anchor.? != self.cursor_byte;
      }
-@@ -1103,6 +1476,7 @@ pub const TextAreaState = struct {
+@@ -1103,6 +1484,7 @@ pub const TextAreaState = struct {
      }
  
      fn notifyChange(self: *Self) void {
@@ -3180,7 +3188,7 @@ index 3833bf0..4f0b36b 100644
          if (self.on_change) |callback| {
              callback(self);
          }
-@@ -1113,6 +1487,7 @@ pub const TextAreaState = struct {
+@@ -1113,6 +1495,7 @@ pub const TextAreaState = struct {
      // =========================================================================
  
      pub fn render(self: *Self, scene: *Scene, text_system: *TextSystem, scale_factor: f32) !void {
@@ -3188,7 +3196,7 @@ index 3833bf0..4f0b36b 100644
          self.updateBlink();
  
          const text = self.buffer.items;
-@@ -1123,6 +1498,12 @@ pub const TextAreaState = struct {
+@@ -1123,6 +1506,12 @@ pub const TextAreaState = struct {
          self.line_height = metrics.line_height;
          self.viewport_height = self.bounds.height;
  
@@ -3201,7 +3209,7 @@ index 3833bf0..4f0b36b 100644
          // Process pending click if any (needs text_system for measurement)
          if (self.pending_click) |click| {
              // Note: Error is intentionally ignored here - click positioning failure is recoverable
-@@ -1138,6 +1519,7 @@ pub const TextAreaState = struct {
+@@ -1138,6 +1527,7 @@ pub const TextAreaState = struct {
          const visible_count_f = @ceil(self.viewport_height / self.line_height) + 1;
          const visible_count: usize = @intFromFloat(visible_count_f);
          const last_visible = @min(first_visible + visible_count, self.lineCount());
@@ -3209,7 +3217,7 @@ index 3833bf0..4f0b36b 100644
  
          // Push clip for text content area
          try scene.pushClip(.{
-@@ -1166,9 +1548,10 @@ pub const TextAreaState = struct {
+@@ -1166,9 +1556,10 @@ pub const TextAreaState = struct {
                  &opts,
              );
          } else if (has_content) {
@@ -3222,7 +3230,23 @@ index 3833bf0..4f0b36b 100644
              }
  
              // Render visible lines
-@@ -1269,24 +1652,54 @@ pub const TextAreaState = struct {
+@@ -1177,9 +1568,13 @@ pub const TextAreaState = struct {
+             }
+         }
+ 
+-        // Render cursor
+-        if (self.focused and self.cursor_visible and preedit.len == 0) {
++        // Place the cursor even while blinked off, so its glide keeps time;
++        // one that wasn't shown appears without gliding.
++        if (self.focused and preedit.len == 0) {
+             try self.renderCursor(scene, text_system, scale_factor);
++        } else {
++            self.glide_target = null;
++            self.cursor_gliding = false;
+         }
+ 
+         // Render scrollbar
+@@ -1269,24 +1664,54 @@ pub const TextAreaState = struct {
                  );
              }
          } else {
@@ -3285,7 +3309,26 @@ index 3833bf0..4f0b36b 100644
      fn renderCursor(
          self: *Self,
          scene: *Scene,
-@@ -1310,29 +1723,51 @@ pub const TextAreaState = struct {
+@@ -1296,43 +1721,96 @@ pub const TextAreaState = struct {
+         _ = scale_factor;
+         const metrics = text_system.getMetrics() orelse return;
+ 
+-        const line_y = self.bounds.y + @as(f32, @floatFromInt(self.cursor_row)) * self.line_height - self.scroll_offset_y;
+-
+         // Calculate cursor x position
+-        var cursor_x = self.bounds.x - self.scroll_offset_x;
++        var text_x: f32 = 0;
+         if (self.cursor_col > 0) {
+             const line_content = self.lineContent(self.cursor_row);
+             if (self.cursor_col <= line_content.len) {
+-                cursor_x += try self.measureText(text_system, line_content[0..self.cursor_col]);
++                text_x = try self.measureText(text_system, line_content[0..self.cursor_col]);
+             }
+         }
++        const at = self.glideCursor(.{ text_x, @as(f32, @floatFromInt(self.cursor_row)) * self.line_height });
++        const cursor_x = self.bounds.x - self.scroll_offset_x + at[0];
++        const line_y = self.bounds.y + at[1] - self.scroll_offset_y;
+ 
          const cursor_height = metrics.line_height;
          const cursor_y = line_y + (self.line_height - cursor_height) / 2;
  
@@ -3296,6 +3339,7 @@ index 3833bf0..4f0b36b 100644
 -            cursor_height,
 -            self.style.cursor_color,
 -        );
+-        try scene.insertQuadClipped(cursor);
 +        var width: f32 = 1.5;
 +        var color = self.style.cursor_color;
 +        if (self.cursor_block) {
@@ -3305,14 +3349,44 @@ index 3833bf0..4f0b36b 100644
 +            color.a *= 0.35;
 +        }
 +        const cursor = Quad.filled(cursor_x, cursor_y, width, cursor_height, color);
-         try scene.insertQuadClipped(cursor);
++        if (self.cursor_visible) try scene.insertQuadClipped(cursor);
  
          // Store cursor rect for IME positioning
 -        self.cursor_rect = .{ .x = cursor_x, .y = cursor_y, .width = 1.5, .height = cursor_height };
 +        self.cursor_rect = .{ .x = cursor_x, .y = cursor_y, .width = width, .height = cursor_height };
++    }
++
++    const glide_us: i64 = 80_000;
++
++    /// Where to draw a cursor headed for `target`: eased out from where it
++    /// was drawn when the target last changed.
++    fn glideCursor(self: *Self, target: [2]f32) [2]f32 {
++        if (!self.cursor_glide) {
++            self.glide_target = null;
++            self.cursor_gliding = false;
++            return target;
++        }
++        const now = if (self.frame_time_us != 0) self.frame_time_us else getTimestampUs();
++        if (self.glide_target) |from| {
++            if (from[0] != target[0] or from[1] != target[1]) {
++                const shown = self.glideAt(from, now);
++                self.glide_offset = .{ shown[0] - target[0], shown[1] - target[1] };
++                self.glide_start_us = now;
++            }
++        } else self.glide_offset = .{ 0, 0 };
++        self.glide_target = target;
++        const at = self.glideAt(target, now);
++        self.cursor_gliding = at[0] != target[0] or at[1] != target[1];
++        return at;
      }
  
 -    fn renderSelection(
++    fn glideAt(self: *const Self, target: [2]f32, now: i64) [2]f32 {
++        const t = std.math.clamp(@as(f32, @floatFromInt(now - self.glide_start_us)) / glide_us, 0, 1);
++        const left = (1 - t) * (1 - t) * (1 - t); // ease out
++        return .{ target[0] + self.glide_offset[0] * left, target[1] + self.glide_offset[1] * left };
++    }
++
 +    /// The marks overlapping the visible rows.
 +    fn renderMarks(self: *Self, scene: *Scene, text_system: *TextSystem, first_row: usize, last_row: usize) !void {
 +        if (self.marks.len == 0 or last_row <= first_row) return;
@@ -3351,7 +3425,7 @@ index 3833bf0..4f0b36b 100644
  
          const start_row = self.lineForOffset(sel_start);
          const end_row = self.lineForOffset(sel_end);
-@@ -1366,7 +1801,7 @@ pub const TextAreaState = struct {
+@@ -1366,7 +1844,7 @@ pub const TextAreaState = struct {
              }
  
              // Show newline extension for non-end rows (full line selected) or when selection extends past content
@@ -3360,7 +3434,7 @@ index 3833bf0..4f0b36b 100644
                  end_x += 4; // Small extension to show selection includes newline
              }
  
-@@ -1375,7 +1810,7 @@ pub const TextAreaState = struct {
+@@ -1375,7 +1853,7 @@ pub const TextAreaState = struct {
                  line_y,
                  @max(2, end_x - start_x), // Min width of 2 for visibility
                  self.line_height,
@@ -3369,7 +3443,7 @@ index 3833bf0..4f0b36b 100644
              );
              try scene.insertQuadClipped(selection_quad);
          }
-@@ -1415,6 +1850,8 @@ pub const TextAreaState = struct {
+@@ -1415,6 +1893,8 @@ pub const TextAreaState = struct {
          // Check each character position to find the closest one
          var col: usize = 0;
          while (col <= line_content.len) : (col += 1) {
@@ -3378,7 +3452,7 @@ index 3833bf0..4f0b36b 100644
              const text_width = if (col > 0) try self.measureText(text_system, line_content[0..col]) else 0;
              const distance = @abs(click_offset_x - text_width);
  
-@@ -1457,6 +1894,41 @@ pub const TextAreaState = struct {
+@@ -1457,6 +1937,41 @@ pub const TextAreaState = struct {
  
          // Clamp scroll
          self.scroll_offset_y = std.math.clamp(self.scroll_offset_y, 0, self.maxScrollY());
@@ -3420,7 +3494,7 @@ index 3833bf0..4f0b36b 100644
      }
  
      // =========================================================================
-@@ -1547,6 +2019,17 @@ fn getTimestamp() i64 {
+@@ -1547,6 +2062,17 @@ fn getTimestamp() i64 {
      return timestamp_ms;
  }
  
@@ -3438,7 +3512,7 @@ index 3833bf0..4f0b36b 100644
  // =============================================================================
  // Tests
  // =============================================================================
-@@ -1579,6 +2062,25 @@ test "TextAreaState line index" {
+@@ -1579,6 +2105,25 @@ test "TextAreaState line index" {
      try std.testing.expectEqual(@as(usize, 2), ta.lineForOffset(14));
  }
  
@@ -3464,7 +3538,7 @@ index 3833bf0..4f0b36b 100644
  test "TextAreaState line content" {
      const allocator = std.testing.allocator;
      var ta = TextAreaState.init(allocator, .{ .x = 0, .y = 0, .width = 300, .height = 200 });
-@@ -1658,6 +2160,132 @@ test "TextAreaState controlled binding defers replacement during IME preedit" {
+@@ -1658,6 +2203,132 @@ test "TextAreaState controlled binding defers replacement during IME preedit" {
      try std.testing.expectEqualStrings("external", ta.getText());
  }
  
@@ -3597,6 +3671,31 @@ index 3833bf0..4f0b36b 100644
  test "TextAreaState caret blink delay wakes only a focused widget" {
      // The frame driver arms a timed redraw from this value, so it must be
      // absent while unfocused, within one interval just after focus, and zero
+@@ -1683,3 +2354,24 @@ test "TextAreaState caret blink delay wakes only a focused widget" {
+     ta.blur();
+     try std.testing.expectEqual(@as(?u32, null), ta.blinkDelayMs());
+ }
++
++test "TextAreaState cursor glides to a new position, then settles" {
++    const bounds: Bounds = .{ .x = 0, .y = 0, .width = 300, .height = 200 };
++    var ta = TextAreaState.init(std.testing.allocator, bounds);
++    defer ta.deinit();
++    ta.cursor_glide = true;
++    ta.frame_time_us = 1_000_000;
++    try std.testing.expectEqual([2]f32{ 0, 0 }, ta.glideCursor(.{ 0, 0 }));
++    try std.testing.expect(!ta.cursor_gliding);
++
++    try std.testing.expectEqual([2]f32{ 0, 0 }, ta.glideCursor(.{ 10, 0 }));
++    try std.testing.expect(ta.cursor_gliding);
++
++    ta.frame_time_us += 40_000;
++    const mid = ta.glideCursor(.{ 10, 0 });
++    try std.testing.expect(mid[0] > 5 and mid[0] < 10);
++
++    ta.frame_time_us += 40_000;
++    try std.testing.expectEqual([2]f32{ 10, 0 }, ta.glideCursor(.{ 10, 0 }));
++    try std.testing.expect(!ta.cursor_gliding);
++}
 diff --git a/src/widgets/text_common.zig b/src/widgets/text_common.zig
 index 9bca58b..d381a34 100644
 --- a/src/widgets/text_common.zig
