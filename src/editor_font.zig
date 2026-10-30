@@ -1,5 +1,5 @@
-//! The editor's font and size: Paper Mono (embedded) by default, or SF Mono,
-//! Menlo or JetBrains Mono Nerd Font (embedded). ⌘+ / ⌘− step the size, ⌘0
+//! The editor's font and size: JetBrains Mono Nerd Font (embedded) by default,
+//! or SF Mono or Menlo. ⌘+ / ⌘− step the size, ⌘0
 //! resets it; both are saved as settings.
 
 const std = @import("std");
@@ -25,11 +25,10 @@ pub const Family = struct {
 };
 
 pub const families = [_]Family{
-    .{ .name = "Paper Mono", .data = assets.paper_mono },
+    .{ .name = "JetBrains Mono Nerd Font", .data = assets.jetbrains_mono_nerd },
     // SF Mono isn't installed by name; this is the system's monospaced face.
     .{ .name = "SF Mono", .system = ".AppleSystemUIFontMonospaced-Regular" },
     .{ .name = "Menlo", .system = "Menlo-Regular" },
-    .{ .name = "JetBrains Mono Nerd Font", .data = assets.jetbrains_mono_nerd },
 };
 
 pub const family_names = blk: {
@@ -67,7 +66,7 @@ pub fn cellWidth(text_system: *TextSystem) f32 {
 }
 
 /// Loads `family` at `size` (clamped) as the editor face, falling back to
-/// Paper Mono; returns the size used.
+/// JetBrains Mono; returns the size used.
 pub fn load(text_system: *TextSystem, family: []const u8, size: f32) f32 {
     const clamped = @min(max_size, @max(min_size, size));
     const f = families[indexOf(family)];
@@ -75,7 +74,7 @@ pub fn load(text_system: *TextSystem, family: []const u8, size: f32) f32 {
         text_system.loadExtraFontData(TextSystem.font_id_mono, data, clamped) catch return theme.mono_font_size;
     } else {
         text_system.loadExtraFont(TextSystem.font_id_mono, f.system, clamped) catch
-            text_system.loadExtraFontData(TextSystem.font_id_mono, assets.paper_mono, clamped) catch return theme.mono_font_size;
+            text_system.loadExtraFontData(TextSystem.font_id_mono, assets.jetbrains_mono_nerd, clamped) catch return theme.mono_font_size;
     }
     return clamped;
 }

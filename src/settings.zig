@@ -4,7 +4,7 @@ const std = @import("std");
 
 pub const Settings = struct {
     /// An `editor_font.families` name.
-    font: []const u8 = "Paper Mono",
+    font: []const u8 = "JetBrains Mono Nerd Font",
     font_size: f32 = 13,
     appearance: Appearance = .system,
     vim_mode: bool = true,
