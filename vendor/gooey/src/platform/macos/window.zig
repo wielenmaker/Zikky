@@ -286,6 +286,8 @@ pub const Window = struct {
         const window_delegate = @import("window_delegate.zig");
         self.delegate = try window_delegate.create(self);
         self.ns_window.msgSend(void, "setDelegate:", .{self.delegate.?.value});
+        const ns_app = objc.getClass("NSApplication").?.msgSend(objc.Object, "sharedApplication", .{});
+        if (ns_app.msgSend(?*anyopaque, "delegate", .{}) == null) ns_app.msgSend(void, "setDelegate:", .{self.delegate.?.value});
 
         // Setup glass/transparency effect if requested
         if (options.background_opacity < 1.0) {
@@ -773,6 +775,8 @@ pub const Window = struct {
 
         if (self.delegate) |d| {
             self.ns_window.msgSend(void, "setDelegate:", .{@as(?*anyopaque, null)});
+            const ns_app = objc.getClass("NSApplication").?.msgSend(objc.Object, "sharedApplication", .{});
+            if (ns_app.msgSend(?*anyopaque, "delegate", .{}) == @as(?*anyopaque, d.value)) ns_app.msgSend(void, "setDelegate:", .{@as(?*anyopaque, null)});
             d.release();
         }
         // Clean up glass effect view

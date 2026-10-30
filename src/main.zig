@@ -47,11 +47,17 @@ fn onInit(cx: *Cx, s: *AppState) void {
     if (last) |ses| session.restore(s, cx.window(), ses);
 }
 
-/// Closing the window or quitting the app saves the session. Closing also
-/// closes settings, so the app quits, like single-window Mac apps.
+/// Closing the window or quitting the app asks to save unsaved text first, then
+/// saves the session. Closing also closes settings, so the app quits, like
+/// single-window Mac apps.
 fn onClose(cx: *Cx) bool {
-    session.save(cx.state(AppState), cx.window());
-    settings_window.hide(cx.state(AppState), cx.window());
+    const s = cx.state(AppState);
+    if (!s.closing and save.unsavedCount(s, cx.window()) > 0) {
+        cx.window().deferCommand(save.confirmQuit);
+        return false;
+    }
+    session.save(s, cx.window());
+    settings_window.hide(s, cx.window());
     return true;
 }
 

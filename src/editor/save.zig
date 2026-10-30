@@ -1,6 +1,7 @@
-//! ⌘S and the Unsaved badge. A tab is unsaved once its editor's text differs
-//! from its file; the scratch editor (no tab open) once it has any text, and
-//! saving that asks where, then opens the new file in a tab.
+//! ⌘S, and asking to save before closing a tab or quitting. A tab is unsaved
+//! once its editor's text differs from its file; the scratch editor (no tab
+//! open) once it has any text, and saving that asks where, then opens the new
+//! file in a tab.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -10,10 +11,6 @@ const AppState = @import("../state.zig").AppState;
 const workspace = @import("../tree/workspace.zig");
 const tab_actions = @import("tab_actions.zig");
 
-const ui = gooey.ui;
-const Cx = gooey.Cx;
-
-const red = gooey.Color.hex(0xe5484d);
 
 fn dirty(g: *gooey.Window, t: *const tabs.Tab) bool {
     const ce = tabs.editor(g, t.id()) orelse return false;
@@ -23,6 +20,32 @@ fn dirty(g: *gooey.Window, t: *const tabs.Tab) bool {
 pub fn unsaved(s: *AppState, g: *gooey.Window) bool {
     if (s.tabs.active()) |t| return dirty(g, t);
     return if (s.editor(g)) |ce| ce.getText().len > 0 else false;
+}
+
+/// Unsaved tabs, and the scratch editor's text.
+pub fn unsavedCount(s: *AppState, g: *gooey.Window) usize {
+    var n: usize = 0;
+    for (s.tabs.items()) |*t| n += @intFromBool(dirty(g, t));
+    return if (s.tabs.count == 0) @intFromBool(unsaved(s, g)) else n;
+}
+
+/// Closing the window or quitting with unsaved text. Deferred: the alert runs a
+/// nested event loop. Once answered, closes the window again, and the app quits.
+pub fn confirmQuit(s: *AppState, g: *gooey.Window) void {
+    const n = unsavedCount(s, g);
+    var buf: [128]u8 = undefined;
+    const message = std.fmt.bufPrintSentinel(&buf, "Do you want to save the changes to {d} file{s}?", .{ n, if (n == 1) "" else "s" }, 0) catch return;
+    switch (gooey.platform.macos.alert.ask(message, "Your changes will be lost if you don't save them.", &.{ "Save", "Don't Save", "Cancel" }) orelse return) {
+        0 => {
+            for (s.tabs.items()) |*t| if (dirty(g, t) and !saveTab(s, g, t)) return;
+            if (s.tabs.count == 0) saveScratch(s, g);
+            if (unsavedCount(s, g) > 0) return;
+        },
+        1 => {},
+        else => return,
+    }
+    s.closing = true;
+    g.platform_window.?.close();
 }
 
 /// ⌘S.
@@ -92,17 +115,3 @@ fn saveScratch(s: *AppState, g: *gooey.Window) void {
     tabs.scratch = "";
     tab_actions.openNew(s, g, node);
 }
-
-pub const Badge = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .direction = .row,
-            .gap = 6,
-            .alignment = .{ .cross = .center },
-            .floating = .{ .element_anchor = .left_bottom, .parent_anchor = .left_bottom, .offset_x = 14, .offset_y = -2, .z_index = 10 },
-        }, .{
-            ui.box(.{ .width = 6, .height = 6, .corner_radius = 3, .background = red }, .{}),
-            ui.text("Unsaved", .{ .size = 11, .color = red }),
-        }));
-    }
-};

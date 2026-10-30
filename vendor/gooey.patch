@@ -726,7 +726,7 @@ index 0000000..2d7e8f8
 +    return manager.msgSend(bool, "trashItemAtURL:resultingItemURL:error:", .{ url, @as(?*anyopaque, null), @as(?*anyopaque, null) });
 +}
 diff --git a/src/platform/macos/window.zig b/src/platform/macos/window.zig
-index 58db814..509cbf9 100644
+index 58db814..d83a7e2 100644
 --- a/src/platform/macos/window.zig
 +++ b/src/platform/macos/window.zig
 @@ -24,6 +24,9 @@ const WindowId = interface_mod.WindowId;
@@ -789,7 +789,16 @@ index 58db814..509cbf9 100644
  
      /// Current mouse position (updated on every mouse event)
      mouse_position: geometry.Point(f64) = .{ .x = 0, .y = 0 },
-@@ -296,6 +318,7 @@ pub const Window = struct {
+@@ -264,6 +286,8 @@ pub const Window = struct {
+         const window_delegate = @import("window_delegate.zig");
+         self.delegate = try window_delegate.create(self);
+         self.ns_window.msgSend(void, "setDelegate:", .{self.delegate.?.value});
++        const ns_app = objc.getClass("NSApplication").?.msgSend(objc.Object, "sharedApplication", .{});
++        if (ns_app.msgSend(?*anyopaque, "delegate", .{}) == null) ns_app.msgSend(void, "setDelegate:", .{self.delegate.?.value});
+ 
+         // Setup glass/transparency effect if requested
+         if (options.background_opacity < 1.0) {
+@@ -296,6 +320,7 @@ pub const Window = struct {
  
          // Make window key and visible, then mark for initial render.
          self.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
@@ -797,7 +806,7 @@ index 58db814..509cbf9 100644
          self.requestRender();
  
          // A newly ordered-front window claims focus. Every backend publishes
-@@ -387,6 +410,9 @@ pub const Window = struct {
+@@ -387,6 +412,9 @@ pub const Window = struct {
              },
          );
          if (self.ns_window.value == null) return error.WindowCreationFailed;
@@ -807,7 +816,7 @@ index 58db814..509cbf9 100644
  
          if (options.titlebar_transparent) {
              self.ns_window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
-@@ -400,6 +426,8 @@ pub const Window = struct {
+@@ -400,6 +428,8 @@ pub const Window = struct {
          }
  
          self.setTitle(options.title);
@@ -816,7 +825,7 @@ index 58db814..509cbf9 100644
  
          if (options.min_size) |min| {
              self.ns_window.msgSend(void, "setMinSize:", .{
-@@ -583,11 +611,14 @@ pub const Window = struct {
+@@ -583,11 +613,14 @@ pub const Window = struct {
  
      /// Set the scene (thread-safe)
      pub fn setScene(self: *Self, s: *const scene_mod.Scene) void {
@@ -835,7 +844,7 @@ index 58db814..509cbf9 100644
          self.scene = s;
          self.requestRender();
      }
-@@ -667,6 +698,13 @@ pub const Window = struct {
+@@ -667,6 +700,13 @@ pub const Window = struct {
                  self.mouse_position = m.position;
                  self.mouse_inside = false;
              },
@@ -849,7 +858,16 @@ index 58db814..509cbf9 100644
              else => {},
          }
  
-@@ -753,12 +791,45 @@ pub const Window = struct {
+@@ -735,6 +775,8 @@ pub const Window = struct {
+ 
+         if (self.delegate) |d| {
+             self.ns_window.msgSend(void, "setDelegate:", .{@as(?*anyopaque, null)});
++            const ns_app = objc.getClass("NSApplication").?.msgSend(objc.Object, "sharedApplication", .{});
++            if (ns_app.msgSend(?*anyopaque, "delegate", .{}) == @as(?*anyopaque, d.value)) ns_app.msgSend(void, "setDelegate:", .{@as(?*anyopaque, null)});
+             d.release();
+         }
+         // Clean up glass effect view
+@@ -753,12 +795,45 @@ pub const Window = struct {
              dl.deinit();
          }
          self.renderer.deinit();
@@ -895,7 +913,7 @@ index 58db814..509cbf9 100644
          const old_width = self.size.width;
          const old_height = self.size.height;
          const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
-@@ -872,6 +943,8 @@ pub const Window = struct {
+@@ -872,6 +947,8 @@ pub const Window = struct {
      }
  
      pub fn handleFocusChange(self: *Self, focused: bool) void {
@@ -904,7 +922,7 @@ index 58db814..509cbf9 100644
          _ = focused;
          self.requestRender();
      }
-@@ -898,6 +971,14 @@ pub const Window = struct {
+@@ -898,6 +975,14 @@ pub const Window = struct {
      /// Focus this window (bring to front and make key window).
      ///
      /// Makes this window the key window and orders it to the front.
@@ -919,7 +937,7 @@ index 58db814..509cbf9 100644
      pub fn focus(self: *Self) void {
          self.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
      }
-@@ -929,6 +1010,14 @@ pub const Window = struct {
+@@ -929,6 +1014,14 @@ pub const Window = struct {
      // Rendering
      // =========================================================================
  
@@ -934,7 +952,7 @@ index 58db814..509cbf9 100644
      /// Request a render on the next vsync
      pub fn requestRender(self: *Self) void {
          self.needs_render.store(true, .release);
-@@ -943,8 +1032,14 @@ pub const Window = struct {
+@@ -943,8 +1036,14 @@ pub const Window = struct {
      /// being dropped.
      pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
          std.debug.assert(delay_ms <= interface_mod.render_delay_ms_max);
@@ -950,7 +968,7 @@ index 58db814..509cbf9 100644
      }
  
      /// Manual render (for when display link is disabled)
-@@ -1135,7 +1230,9 @@ pub const Window = struct {
+@@ -1135,7 +1234,9 @@ pub const Window = struct {
          self.metal_layer.msgSend(void, "setPixelFormat:", .{@as(u64, 80)});
          self.metal_layer.msgSend(void, "setContentsScale:", .{self.scale_factor});
          self.metal_layer.msgSend(void, "setDisplaySyncEnabled:", .{false});
@@ -961,7 +979,7 @@ index 58db814..509cbf9 100644
  
          // Allow transparency through the Metal layer
          self.metal_layer.msgSend(void, "setOpaque:", .{false});
-@@ -1313,6 +1410,22 @@ pub const Window = struct {
+@@ -1313,6 +1414,22 @@ pub const Window = struct {
  ///
  /// The render_mutex protects: scene, text_atlas, size, scale_factor, background_color, renderer.
  /// The on_render callback is called WITH the lock held to prevent race conditions.
@@ -984,7 +1002,7 @@ index 58db814..509cbf9 100644
  fn displayLinkCallback(
      dl: display_link.CVDisplayLinkRef,
      in_now: *const display_link.CVTimeStamp,
-@@ -1323,7 +1436,6 @@ fn displayLinkCallback(
+@@ -1323,7 +1440,6 @@ fn displayLinkCallback(
  ) callconv(.c) display_link.CVReturn {
      _ = dl;
      _ = in_now;
@@ -992,7 +1010,7 @@ index 58db814..509cbf9 100644
      _ = flags_in;
      _ = flags_out;
  
-@@ -1336,21 +1448,28 @@ fn displayLinkCallback(
+@@ -1336,21 +1452,28 @@ fn displayLinkCallback(
  
      // Always render if custom shader animation is enabled (for iTime)
      const explicit_render = window.needs_render.swap(false, .acq_rel);
@@ -1025,7 +1043,7 @@ index 58db814..509cbf9 100644
      if (now_ms - static.last_print_ms > 1000) {
          // Uncomment to trace callback rate:
          // std.debug.print(
-@@ -1379,6 +1498,8 @@ fn displayLinkCallback(
+@@ -1379,6 +1502,8 @@ fn displayLinkCallback(
      // Call render callback to let user rebuild scene
      // NOTE: This is called with the lock held, so the callback must not
      // call any Window methods that also try to acquire the lock.
@@ -1035,10 +1053,10 @@ index 58db814..509cbf9 100644
          callback(window);
      }
 diff --git a/src/platform/macos/window_delegate.zig b/src/platform/macos/window_delegate.zig
-index 756977e..efc9385 100644
+index 756977e..84257f6 100644
 --- a/src/platform/macos/window_delegate.zig
 +++ b/src/platform/macos/window_delegate.zig
-@@ -41,12 +41,18 @@ pub fn registerClass() !void {
+@@ -41,12 +41,21 @@ pub fn registerClass() !void {
      if (!cls.addMethod("windowDidResignKey:", windowDidResignKey)) {
          return error.MethodAddFailed;
      }
@@ -1054,10 +1072,13 @@ index 756977e..efc9385 100644
 +    if (!cls.addMethod("applicationWillTerminate:", applicationWillTerminate)) {
 +        return error.MethodAddFailed;
 +    }
++    if (!cls.addMethod("applicationShouldTerminate:", applicationShouldTerminate)) {
++        return error.MethodAddFailed;
++    }
  
      objc.registerClassPair(cls);
      delegate_class = cls;
-@@ -67,6 +73,17 @@ pub fn create(window: *Window) !objc.Object {
+@@ -67,6 +76,17 @@ pub fn create(window: *Window) !objc.Object {
      const window_obj = objc.Object.fromId(@as(objc.c.id, @ptrCast(window)));
      delegate.setInstanceVariable("_gooeyWindow", window_obj);
  
@@ -1075,10 +1096,17 @@ index 756977e..efc9385 100644
      return delegate;
  }
  
-@@ -97,6 +114,11 @@ fn windowShouldClose(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c)
+@@ -97,6 +117,18 @@ fn windowShouldClose(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c)
      return window.handleClose();
  }
  
++/// The first window's delegate is the app's too: its close callback can cancel a quit.
++fn applicationShouldTerminate(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) c_ulong {
++    const window = getWindow(self) orelse return 1; // NSTerminateNow
++    if (window.closed) return 1;
++    return @intFromBool(window.handleClose()); // NSTerminateCancel is 0
++}
++
 +fn applicationWillTerminate(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
 +    const window = getWindow(self) orelse return;
 +    if (!window.closed) _ = window.handleClose();
@@ -1087,7 +1115,7 @@ index 756977e..efc9385 100644
  fn windowWillClose(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
      // Deliberately empty. The previous comment claimed "cleanup happens in
      // handleClose via windowShouldClose", which was never true: `handleClose`
-@@ -122,6 +144,13 @@ fn windowDidResignKey(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c)
+@@ -122,6 +154,13 @@ fn windowDidResignKey(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c)
      window.handleFocusChange(false);
  }
  
