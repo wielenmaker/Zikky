@@ -10,6 +10,7 @@ pub const Settings = struct {
     vim_mode: bool = true,
     soft_wrap: bool = true,
     line_numbers: bool = true,
+    smooth_caret: bool = true,
     show_hidden: bool = false,
     /// Comma-separated folder names the tree skips.
     exclude: []const u8 = ".git, .zig-cache, node_modules, target, zig-out, zig-pkg",
@@ -20,7 +21,7 @@ pub const Settings = struct {
     pub const Appearance = enum { system, light, dark };
 
     /// The settings shown as toggles.
-    pub const Switch = enum { vim_mode, soft_wrap, line_numbers, show_hidden, restore_session };
+    pub const Switch = enum { vim_mode, soft_wrap, line_numbers, smooth_caret, show_hidden, restore_session };
 
     pub fn get(self: *const Settings, sw: Switch) bool {
         return switch (sw) {

@@ -110,10 +110,11 @@ const Container = struct {
     }
 };
 
-/// Once the editor exists: vim's block cursor, a new one's text (its view
+/// Once the editor exists: vim's block cursor, the caret glide, a new one's text (its view
 /// follows next frame), the focus it inherits.
 fn prepare(s: *AppState, g: *gooey.Window, ce: *gooey.widgets.CodeEditorState, id: []const u8) void {
     ce.text_area.cursor_block = s.settings.vim_mode and vim.vim.mode == .normal;
+    ce.text_area.cursor_glide = s.settings.smooth_caret;
     if (s.tabs.active()) |t| if (t.pending != null) {
         ce.setText(t.source) catch {};
         g.requestRender();
