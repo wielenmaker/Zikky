@@ -11,6 +11,7 @@ const sidebar = @import("tree/sidebar.zig");
 const EditorPanel = @import("editor/editor_panel.zig").EditorPanel;
 const editor_font = @import("editor/editor_font.zig");
 const app_menu = @import("app_menu.zig");
+const shortcuts = @import("shortcuts/shortcuts.zig");
 const store = @import("store.zig");
 const Settings = @import("settings/settings.zig").Settings;
 const session = @import("session.zig");
@@ -39,12 +40,8 @@ fn onInit(cx: *Cx, s: *AppState) void {
     s.main = cx.window();
     font_actions.apply(s, cx.window());
     ts.loadExtraFont(gooey.text.TextSystem.font_id_bold, ".AppleSystemUIFontDemi", theme.ui_font_size) catch {};
-    editor_font.bindKeys(cx.window());
-    sidebar.bindKeys(cx.window());
-    find.bindKeys(cx.window());
-    palette.bindKeys(cx.window());
-    terminal.bindKeys(cx.window());
-    app_menu.install(cx.window());
+    terminal.init(cx.window());
+    shortcuts.apply(s, cx.window());
     settings_actions.applyVim(s, cx.window());
     cx.window().platform_window.?.autosaveFrame("Zikky");
     workspace.load(s, cx.window().io);
@@ -125,6 +122,7 @@ test {
     _ = @import("overlays/fuzzy.zig");
     _ = @import("editor/find.zig");
     _ = @import("overlays/palette.zig");
+    _ = @import("shortcuts/combo.zig");
 }
 
 /// `zikky [folder]` opens `folder`; without one, the last session's folder

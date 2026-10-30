@@ -4,10 +4,11 @@ const std = @import("std");
 const gooey = @import("gooey");
 const Lucide = @import("gooey-components").Lucide;
 const Switch = @import("settings.zig").Settings.Switch;
+const shortcuts = @import("../shortcuts/shortcuts.zig");
 
 const Color = gooey.Color;
 
-pub const Control = union(enum) { toggle: Switch, font, font_size, exclude, theme, preview };
+pub const Control = union(enum) { toggle: Switch, font, font_size, exclude, theme, preview, shortcut: shortcuts.Id };
 
 pub const Row = struct { label: []const u8, control: Control };
 /// An empty title shows the group alone.
@@ -65,6 +66,15 @@ pub const panes = [_]Pane{
             .{ .label = "Reopen the last folder and file", .control = .{ .toggle = .restore_session } },
         } },
     } },
+    .{ .name = "Keyboard", .icon = Lucide.keyboard, .tint = Color.hex(0x64748b), .sections = &.{
+        .{ .title = "Shortcuts", .rows = &shortcut_rows },
+    } },
+};
+
+const shortcut_rows = blk: {
+    var rows: [shortcuts.all.values.len]Row = undefined;
+    for (&rows, std.enums.values(shortcuts.Id)) |*r, id| r.* = .{ .label = shortcuts.all.get(id).title, .control = .{ .shortcut = id } };
+    break :blk rows;
 };
 
 /// The pane to show: the selected one, or the first the search keeps.

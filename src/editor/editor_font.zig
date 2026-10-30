@@ -43,14 +43,6 @@ pub fn indexOf(name: []const u8) usize {
     return 0;
 }
 
-pub fn bindKeys(g: *gooey.Window) void {
-    const keymap = g.keymap();
-    keymap.bind(ZoomIn, "cmd-=", null);
-    keymap.bind(ZoomIn, "cmd-shift-=", null); // ⌘+ on US layouts
-    keymap.bind(ZoomOut, "cmd--", null);
-    keymap.bind(ZoomReset, "cmd-0", null);
-}
-
 /// The editor face's line height at its loaded size.
 pub fn lineHeight(text_system: *TextSystem) f32 {
     text_system.useFont(TextSystem.font_id_mono);

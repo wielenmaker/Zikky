@@ -43,12 +43,6 @@ var last: [256]u8 = undefined;
 var last_len: usize = 0;
 var last_backward = false;
 
-pub fn bindKeys(g: *gooey.Window) void {
-    g.keymap().bind(Open, "cmd-f", null);
-    g.keymap().bind(Next, "cmd-g", null);
-    g.keymap().bind(Prev, "cmd-shift-g", null);
-}
-
 /// ⌘F: opens the bar, its query the selection if there is one on a line.
 pub fn open(s: *AppState, g: *gooey.Window) void {
     const ce = s.editor(g) orelse return;
