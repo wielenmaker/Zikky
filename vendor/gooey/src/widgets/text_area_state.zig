@@ -176,6 +176,14 @@ pub const TextAreaState = struct {
     preferred_column: ?usize = null,
     /// Draw the cursor as a block over the character (vim's normal mode).
     cursor_block: bool = false,
+    /// Ease the cursor to each new position instead of jumping.
+    cursor_glide: bool = false,
+    /// Where the cursor is headed and where it started, relative to that,
+    /// in content coordinates so scrolling doesn't glide it.
+    glide_target: ?[2]f32 = null,
+    glide_offset: [2]f32 = .{ 0, 0 },
+    glide_start_us: i64 = 0,
+    cursor_gliding: bool = false,
 
     // IME composition state
     preedit_buffer: std.ArrayList(u8),
@@ -1560,9 +1568,13 @@ pub const TextAreaState = struct {
             }
         }
 
-        // Render cursor
-        if (self.focused and self.cursor_visible and preedit.len == 0) {
+        // Place the cursor even while blinked off, so its glide keeps time;
+        // one that wasn't shown appears without gliding.
+        if (self.focused and preedit.len == 0) {
             try self.renderCursor(scene, text_system, scale_factor);
+        } else {
+            self.glide_target = null;
+            self.cursor_gliding = false;
         }
 
         // Render scrollbar
@@ -1709,16 +1721,17 @@ pub const TextAreaState = struct {
         _ = scale_factor;
         const metrics = text_system.getMetrics() orelse return;
 
-        const line_y = self.bounds.y + @as(f32, @floatFromInt(self.cursor_row)) * self.line_height - self.scroll_offset_y;
-
         // Calculate cursor x position
-        var cursor_x = self.bounds.x - self.scroll_offset_x;
+        var text_x: f32 = 0;
         if (self.cursor_col > 0) {
             const line_content = self.lineContent(self.cursor_row);
             if (self.cursor_col <= line_content.len) {
-                cursor_x += try self.measureText(text_system, line_content[0..self.cursor_col]);
+                text_x = try self.measureText(text_system, line_content[0..self.cursor_col]);
             }
         }
+        const at = self.glideCursor(.{ text_x, @as(f32, @floatFromInt(self.cursor_row)) * self.line_height });
+        const cursor_x = self.bounds.x - self.scroll_offset_x + at[0];
+        const line_y = self.bounds.y + at[1] - self.scroll_offset_y;
 
         const cursor_height = metrics.line_height;
         const cursor_y = line_y + (self.line_height - cursor_height) / 2;
@@ -1732,10 +1745,40 @@ pub const TextAreaState = struct {
             color.a *= 0.35;
         }
         const cursor = Quad.filled(cursor_x, cursor_y, width, cursor_height, color);
-        try scene.insertQuadClipped(cursor);
+        if (self.cursor_visible) try scene.insertQuadClipped(cursor);
 
         // Store cursor rect for IME positioning
         self.cursor_rect = .{ .x = cursor_x, .y = cursor_y, .width = width, .height = cursor_height };
+    }
+
+    const glide_us: i64 = 80_000;
+
+    /// Where to draw a cursor headed for `target`: eased out from where it
+    /// was drawn when the target last changed.
+    fn glideCursor(self: *Self, target: [2]f32) [2]f32 {
+        if (!self.cursor_glide) {
+            self.glide_target = null;
+            self.cursor_gliding = false;
+            return target;
+        }
+        const now = if (self.frame_time_us != 0) self.frame_time_us else getTimestampUs();
+        if (self.glide_target) |from| {
+            if (from[0] != target[0] or from[1] != target[1]) {
+                const shown = self.glideAt(from, now);
+                self.glide_offset = .{ shown[0] - target[0], shown[1] - target[1] };
+                self.glide_start_us = now;
+            }
+        } else self.glide_offset = .{ 0, 0 };
+        self.glide_target = target;
+        const at = self.glideAt(target, now);
+        self.cursor_gliding = at[0] != target[0] or at[1] != target[1];
+        return at;
+    }
+
+    fn glideAt(self: *const Self, target: [2]f32, now: i64) [2]f32 {
+        const t = std.math.clamp(@as(f32, @floatFromInt(now - self.glide_start_us)) / glide_us, 0, 1);
+        const left = (1 - t) * (1 - t) * (1 - t); // ease out
+        return .{ target[0] + self.glide_offset[0] * left, target[1] + self.glide_offset[1] * left };
     }
 
     /// The marks overlapping the visible rows.
@@ -2310,4 +2353,25 @@ test "TextAreaState caret blink delay wakes only a focused widget" {
 
     ta.blur();
     try std.testing.expectEqual(@as(?u32, null), ta.blinkDelayMs());
+}
+
+test "TextAreaState cursor glides to a new position, then settles" {
+    const bounds: Bounds = .{ .x = 0, .y = 0, .width = 300, .height = 200 };
+    var ta = TextAreaState.init(std.testing.allocator, bounds);
+    defer ta.deinit();
+    ta.cursor_glide = true;
+    ta.frame_time_us = 1_000_000;
+    try std.testing.expectEqual([2]f32{ 0, 0 }, ta.glideCursor(.{ 0, 0 }));
+    try std.testing.expect(!ta.cursor_gliding);
+
+    try std.testing.expectEqual([2]f32{ 0, 0 }, ta.glideCursor(.{ 10, 0 }));
+    try std.testing.expect(ta.cursor_gliding);
+
+    ta.frame_time_us += 40_000;
+    const mid = ta.glideCursor(.{ 10, 0 });
+    try std.testing.expect(mid[0] > 5 and mid[0] < 10);
+
+    ta.frame_time_us += 40_000;
+    try std.testing.expectEqual([2]f32{ 10, 0 }, ta.glideCursor(.{ 10, 0 }));
+    try std.testing.expect(!ta.cursor_gliding);
 }
