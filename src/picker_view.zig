@@ -10,6 +10,7 @@ const picker = @import("picker.zig");
 const fuzzy = @import("fuzzy.zig");
 const file_kind = @import("file_kind.zig");
 const FileIcon = @import("file_icon.zig").FileIcon;
+const clickable = @import("clickable.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -133,7 +134,10 @@ const Row = struct {
         const s = cx.state(AppState);
         const node = s.picker.node(index);
         const kind = file_kind.of(s.names[node]);
-        cx.render(ui.box(.{
+        cx.render(clickable.box(.{
+            .fill = if (index == s.picker.selected) theme.color.sidebar_accent else Color.transparent,
+            .on_click = cx.commandWith(index, picker.pick),
+        }, .{
             .fill_width = true,
             .height = picker.row_height,
             .direction = .row,
@@ -141,8 +145,6 @@ const Row = struct {
             .padding = .{ .symmetric = .{ .x = 8, .y = 0 } },
             .gap = 8,
             .corner_radius = theme.radius,
-            .background = if (index == s.picker.selected) theme.color.sidebar_accent else Color.transparent,
-            .on_click_handler = cx.commandWith(index, picker.pick),
         }, .{
             FileIcon{ .kind = kind, .size = 14 },
             Path{ .path = s.relativePath(node), .query = s.picker.query },

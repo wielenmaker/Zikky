@@ -5,6 +5,7 @@ const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
 const panes = @import("settings_panes.zig");
+const clickable = @import("clickable.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -79,16 +80,17 @@ const Item = struct {
     selected: bool,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
+        cx.render(clickable.box(.{
+            .fill = if (self.selected) theme.color.settings.selected else gooey.Color.transparent,
+            .on_click = cx.commandWith(self.index, AppState.selectPane),
+        }, .{
             .fill_width = true,
             .height = 32,
             .corner_radius = 8,
-            .background = if (self.selected) theme.color.settings.selected else gooey.Color.transparent,
             .direction = .row,
             .alignment = .{ .cross = .center },
             .padding = .{ .each = .{ .top = 0, .right = 8, .bottom = 0, .left = 6 } },
             .gap = 8,
-            .on_click_handler = cx.commandWith(self.index, AppState.selectPane),
         }, .{
             ui.box(.{
                 .width = 20,

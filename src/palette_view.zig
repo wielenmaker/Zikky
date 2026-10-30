@@ -6,6 +6,7 @@ const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
 const palette = @import("palette.zig");
+const clickable = @import("clickable.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -124,7 +125,10 @@ const Row = struct {
     fn render(index: u32, cx: *Cx) void {
         const p = &cx.state(AppState).palette;
         const c = p.at(index);
-        cx.render(ui.box(.{
+        cx.render(clickable.box(.{
+            .fill = if (index == p.selected) theme.color.sidebar_accent else Color.transparent,
+            .on_click = cx.commandWith(index, palette.pick),
+        }, .{
             .fill_width = true,
             .height = palette.row_height,
             .direction = .row,
@@ -132,8 +136,6 @@ const Row = struct {
             .padding = .{ .symmetric = .{ .x = 10, .y = 0 } },
             .gap = 8,
             .corner_radius = row_radius,
-            .background = if (index == p.selected) theme.color.sidebar_accent else Color.transparent,
-            .on_click_handler = cx.commandWith(index, palette.pick),
         }, .{
             ui.box(.{ .grow_width = true }, .{ui.text(c.title, .{ .size = 14, .color = theme.color.foreground })}),
             ui.text(c.keys, .{ .size = 12, .color = theme.color.muted }),
