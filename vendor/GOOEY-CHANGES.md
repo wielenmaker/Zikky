@@ -234,3 +234,13 @@ smooth caret.
 - `TextAreaState.cursor_gliding`: the frame driver keeps frames coming until it settles.
 
 Files: `src/widgets/text_area_state.zig`*, `src/runtime/frame.zig`*.
+
+## 15. Quitting can be cancelled
+
+Quitting (⌘Q, the Dock, logout) only told the close callback through the will-terminate
+notification, too late to ask about unsaved work.
+
+- The first window's delegate becomes `NSApp`'s delegate, and its `applicationShouldTerminate:`
+  runs the close callback: one that returns false cancels the quit. The window clears it on deinit.
+
+Files: `src/platform/macos/window_delegate.zig`, `src/platform/macos/window.zig`.

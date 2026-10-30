@@ -52,6 +52,8 @@ pub const AppState = struct {
     cell_h: f32 = 16,
     /// The terminal panel (⌘J).
     term: terminal.Panel = .{},
+    /// Unsaved text was asked about: the window closes without asking again.
+    closing: bool = false,
 
     /// No folder is open: the sidebar stays shut, with nothing to show.
     pub fn noFolder(self: *const AppState) bool {
