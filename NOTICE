@@ -1,0 +1,16 @@
+Zikky includes or links the following third-party software and assets.
+
+gooey (vendor/gooey, with local changes listed in vendor/GOOEY-CHANGES.md)
+  MIT, Copyright 2025 Duane Bester. https://github.com/duanebester/gooey
+  License: vendor/gooey/LICENSE
+  Includes Lucide icons (ISC). https://lucide.dev
+
+Ghostty terminal core (libghostty-vt, fetched by build.zig.zon)
+  MIT, Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors.
+  https://github.com/ghostty-org/ghostty
+  Its own dependencies (zigimg, uucode, ...) are MIT and fetched with it.
+
+JetBrains Mono Nerd Font Mono (assets/fonts, embedded)
+  SIL Open Font License 1.1, Copyright 2020 The JetBrains Mono Project Authors.
+  License: assets/fonts/JetBrainsMono-OFL.txt
+  Nerd Fonts icon glyphs: licenses in assets/fonts/JetBrainsMonoNerdFont-README.md
