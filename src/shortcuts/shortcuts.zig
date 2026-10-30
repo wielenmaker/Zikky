@@ -17,12 +17,13 @@ const terminal = @import("../terminal/terminal.zig");
 
 const actionTypeId = gooey.input.actionTypeId;
 
-pub const Id = enum { quick_open, open_folder, save, close_tab, find, find_next, find_prev, sidebar, terminal, palette, zoom_in, zoom_out, zoom_reset, settings };
+pub const Id = enum { quick_open, open_file, open_folder, save, close_tab, find, find_next, find_prev, sidebar, terminal, palette, zoom_in, zoom_out, zoom_reset, settings };
 
 const Shortcut = struct { title: []const u8, keys: []const u8 };
 
 pub const all = std.enums.EnumArray(Id, Shortcut).init(.{
-    .quick_open = .{ .title = "Find File…", .keys = "cmd-o cmd-p" },
+    .quick_open = .{ .title = "Find File…", .keys = "cmd-p" },
+    .open_file = .{ .title = "Open File…", .keys = "cmd-o" },
     .open_folder = .{ .title = "Open Folder…", .keys = "shift-cmd-o" },
     .save = .{ .title = "Save", .keys = "cmd-s" },
     .close_tab = .{ .title = "Close Tab", .keys = "cmd-w" },
@@ -106,6 +107,7 @@ fn ours(a: gooey.input.ActionTypeId) bool {
 fn action(id: Id) gooey.input.ActionTypeId {
     return switch (id) {
         .quick_open => actionTypeId(app_menu.QuickOpen),
+        .open_file => actionTypeId(app_menu.OpenFile),
         .open_folder => actionTypeId(app_menu.OpenFolder),
         .save => actionTypeId(app_menu.Save),
         .close_tab => actionTypeId(app_menu.CloseFile),

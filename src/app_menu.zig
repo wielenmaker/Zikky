@@ -11,6 +11,7 @@ const menu = gooey.platform.macos.menu;
 const Item = menu.Item;
 
 pub const CloseFile = struct {};
+pub const OpenFile = struct {};
 pub const OpenFolder = struct {};
 pub const OpenSettings = struct {};
 pub const QuickOpen = struct {};
@@ -38,6 +39,7 @@ pub fn install(set: *const Settings) void {
     };
     const file = [_]Item{
         bound(set, "Quick Open…", .quick_open),
+        bound(set, "Open File…", .open_file),
         bound(set, "Open Folder…", .open_folder),
         bound(set, "Save", .save),
         sep,

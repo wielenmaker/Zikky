@@ -26,6 +26,7 @@ pub const Command = struct {
 
 pub const root = [_]Command{
     .{ .title = "Find File…", .shortcut = .quick_open, .run = picker.open },
+    .{ .title = "Open File…", .shortcut = .open_file, .run = workspace.openFile },
     .{ .title = "Open Folder…", .shortcut = .open_folder, .run = workspace.openFolder },
     .{ .title = "Save", .shortcut = .save, .run = save.run },
     .{ .title = "Close Tab", .shortcut = .close_tab, .run = tab_actions.closeShown },
