@@ -2,21 +2,27 @@ const std = @import("std");
 const gooey = @import("gooey");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
-const sidebar = @import("sidebar.zig");
-const EditorPanel = @import("editor_panel.zig").EditorPanel;
-const editor_font = @import("editor_font.zig");
+const workspace = @import("tree/workspace.zig");
+const tab_actions = @import("editor/tab_actions.zig");
+const settings_actions = @import("settings/settings_actions.zig");
+const picker = @import("overlays/picker.zig");
+const font_actions = @import("editor/font_actions.zig");
+const sidebar = @import("tree/sidebar.zig");
+const EditorPanel = @import("editor/editor_panel.zig").EditorPanel;
+const editor_font = @import("editor/editor_font.zig");
 const app_menu = @import("app_menu.zig");
 const store = @import("store.zig");
-const Settings = @import("settings.zig").Settings;
+const Settings = @import("settings/settings.zig").Settings;
 const session = @import("session.zig");
-const settings_window = @import("settings_window.zig");
-const PickerView = @import("picker_view.zig").PickerView;
+const settings_window = @import("settings/settings_window.zig");
+const PickerView = @import("overlays/picker_view.zig").PickerView;
 const appearance = @import("appearance.zig");
-const find = @import("find.zig");
-const palette = @import("palette.zig");
-const PaletteView = @import("palette_view.zig").PaletteView;
-const terminal = @import("terminal.zig");
+const find = @import("editor/find.zig");
+const palette = @import("overlays/palette.zig");
+const PaletteView = @import("overlays/palette_view.zig").PaletteView;
+const terminal = @import("terminal/terminal.zig");
 const welcome = @import("welcome.zig");
+const save = @import("editor/save.zig");
 const assets = @import("assets");
 
 const ui = gooey.ui;
@@ -28,10 +34,10 @@ var app: gooey.runtime.MultiWindowApp = undefined;
 var last: ?session.Session = null;
 
 fn onInit(cx: *Cx, s: *AppState) void {
-    // UI text uses the primary face (SF Pro); the editor uses Paper Mono.
+    // UI text uses the primary face (SF Pro); the editor uses JetBrains Mono.
     const ts = cx.window().resources.text_system;
     s.main = cx.window();
-    s.applyFont(cx.window());
+    font_actions.apply(s, cx.window());
     ts.loadExtraFont(gooey.text.TextSystem.font_id_bold, ".AppleSystemUIFontDemi", theme.ui_font_size) catch {};
     editor_font.bindKeys(cx.window());
     sidebar.bindKeys(cx.window());
@@ -39,10 +45,10 @@ fn onInit(cx: *Cx, s: *AppState) void {
     palette.bindKeys(cx.window());
     terminal.bindKeys(cx.window());
     app_menu.install(cx.window());
-    s.applyVim(cx.window());
+    settings_actions.applyVim(s, cx.window());
     cx.window().platform_window.?.autosaveFrame("Zikky");
-    s.load(cx.window().io);
-    if (s.tree.node_count > 0) s.remember(s.paths[0]);
+    workspace.load(s, cx.window().io);
+    if (s.tree.node_count > 0) workspace.remember(s, s.paths[0]);
     if (last) |ses| session.restore(s, cx.window(), ses);
 }
 
@@ -63,7 +69,7 @@ fn render(cx: *Cx) void {
         .height = size.height,
         .background = theme.color.sidebar_bg,
     }, .{
-        ui.onActionHandler(app_menu.OpenFolder, cx.command(AppState.openFolder)),
+        ui.onActionHandler(app_menu.OpenFolder, cx.command(workspace.openFolder)),
         ui.onActionHandler(app_menu.OpenSettings, cx.command(settings_window.open)),
         welcome.Welcome{ .width = size.width, .height = size.height },
     }));
@@ -74,19 +80,20 @@ fn render(cx: *Cx) void {
         .background = theme.color.sidebar_bg,
         .direction = .row,
     }, .{
-        ui.onActionHandler(editor_font.ZoomIn, cx.command(AppState.zoomIn)),
-        ui.onActionHandler(editor_font.ZoomOut, cx.command(AppState.zoomOut)),
-        ui.onActionHandler(editor_font.ZoomReset, cx.command(AppState.zoomReset)),
+        ui.onActionHandler(editor_font.ZoomIn, cx.command(font_actions.zoomIn)),
+        ui.onActionHandler(editor_font.ZoomOut, cx.command(font_actions.zoomOut)),
+        ui.onActionHandler(editor_font.ZoomReset, cx.command(font_actions.zoomReset)),
         ui.onActionHandler(sidebar.ToggleSidebar, cx.command(AppState.toggleSidebar)),
-        ui.onActionHandler(app_menu.CloseFile, cx.command(AppState.close)),
-        ui.onActionHandler(app_menu.OpenFolder, cx.command(AppState.openFolder)),
+        ui.onActionHandler(app_menu.CloseFile, cx.command(tab_actions.closeShown)),
+        ui.onActionHandler(app_menu.OpenFolder, cx.command(workspace.openFolder)),
         ui.onActionHandler(app_menu.OpenSettings, cx.command(settings_window.open)),
-        ui.onActionHandler(app_menu.QuickOpen, cx.command(AppState.openPicker)),
+        ui.onActionHandler(app_menu.QuickOpen, cx.command(picker.open)),
+        ui.onActionHandler(app_menu.Save, cx.command(save.run)),
         ui.onActionHandler(find.Open, cx.command(find.open)),
         ui.onActionHandler(palette.Open, cx.command(palette.toggle)),
         ui.onActionHandler(find.Next, cx.command(find.next)),
         ui.onActionHandler(find.Prev, cx.command(find.prev)),
-        ui.onActionHandler(terminal.Toggle, cx.command(AppState.toggleTerminal)),
+        ui.onActionHandler(terminal.Toggle, cx.command(terminal.toggle)),
         ui.when(sidebar_width > 0, .{sidebar.Sidebar{}}),
         EditorPanel{ .width = size.width - sidebar_width, .height = size.height },
         ui.when(cx.state(AppState).picker.open, .{PickerView{ .width = size.width, .height = size.height }}),
@@ -109,15 +116,15 @@ fn mainWindow() gooey.runtime.AppWindowOptions {
 }
 
 test {
-    _ = @import("fs_tree.zig");
-    _ = @import("file_kind.zig");
-    _ = @import("syntax.zig");
-    _ = @import("syntax_markup.zig");
-    _ = @import("vim_motion.zig");
-    _ = @import("settings.zig");
-    _ = @import("fuzzy.zig");
-    _ = @import("find.zig");
-    _ = @import("palette.zig");
+    _ = @import("tree/fs_tree.zig");
+    _ = @import("ui/file_kind.zig");
+    _ = @import("syntax/syntax.zig");
+    _ = @import("syntax/syntax_markup.zig");
+    _ = @import("vim/vim_motion.zig");
+    _ = @import("settings/settings.zig");
+    _ = @import("overlays/fuzzy.zig");
+    _ = @import("editor/find.zig");
+    _ = @import("overlays/palette.zig");
 }
 
 /// `zikky [folder]` opens `folder`; without one, the last session's folder
@@ -139,7 +146,7 @@ pub fn main(init: std.process.Init) !void {
     const ses = store.load(session.Session, state.arena, init.io, session.Session.file_name);
     // Oldest first, so the newest ends up in front.
     var i = ses.recent.len;
-    while (i > 0) : (i -= 1) if (exists(init.io, ses.recent[i - 1])) state.remember(ses.recent[i - 1]);
+    while (i > 0) : (i -= 1) if (exists(init.io, ses.recent[i - 1])) workspace.remember(&state, ses.recent[i - 1]);
     if (args.len == 1 and state.settings.restore_session and ses.folder.len > 0 and exists(init.io, ses.folder)) {
         state.root = ses.folder;
         last = ses;

@@ -6,7 +6,9 @@ const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
-const fade_label = @import("fade_label.zig");
+const workspace = @import("tree/workspace.zig");
+const fade_label = @import("ui/fade_label.zig");
+const clickable = @import("ui/clickable.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -50,7 +52,7 @@ pub const Welcome = struct {
                 .shadow = theme.shadow_xs,
                 .padding = .{ .all = 6 },
             }, .{
-                Row{ .icon = Lucide.folder_open, .label = "Open Folder…", .hint = "⇧⌘O", .on_click = cx.command(AppState.openFolder) },
+                Row{ .icon = Lucide.folder_open, .label = "Open Folder…", .hint = "⇧⌘O", .on_click = cx.command(workspace.openFolder) },
                 ui.when(s.recent_count > 0, .{
                     ui.box(.{ .fill_width = true, .padding = .{ .each = .{ .top = 6, .right = 4, .bottom = 6, .left = 4 } } }, .{
                         ui.box(.{ .fill_width = true, .height = 1, .background = theme.color.border }, .{}),
@@ -74,7 +76,7 @@ const Recent = struct {
                 .icon = Lucide.folder,
                 .label = std.fs.path.basename(path),
                 .path = tilde(&shown[i], std.fs.path.dirname(path) orelse path),
-                .on_click = cx.commandWith(@as(u8, @intCast(i)), AppState.openRecent),
+                .on_click = cx.commandWith(@as(u8, @intCast(i)), workspace.openRecent),
             });
         }
     }
@@ -93,15 +95,13 @@ const Row = struct {
         const label_w = (cx.measureText(self.label, .{ .font_size = theme.ui_font_size }) catch return).width;
         // The card's inner width less the row's padding, icon and the gap before the path.
         const room = card_width - 2 - 12 - 2 * row_pad - icon_slot - label_w - 10;
-        cx.render(ui.box(.{
+        cx.render(clickable.box(.{ .hover = theme.color.sidebar_accent.withAlpha(0.65), .on_click = self.on_click }, .{
             .fill_width = true,
             .height = row_height,
             .direction = .row,
             .alignment = .{ .cross = .center },
             .padding = .{ .each = .{ .top = 0, .right = row_pad, .bottom = 0, .left = row_pad } },
             .corner_radius = theme.radius,
-            .hover_background = theme.color.sidebar_accent.withAlpha(0.65),
-            .on_click_handler = self.on_click,
         }, .{
             ui.box(.{ .width = icon_slot, .alignment = .{ .cross = .center } }, .{
                 Svg{ .path = self.icon, .size = 15, .no_fill = true, .stroke_color = theme.color.muted, .stroke_width = 15.0 / 12.0 },
