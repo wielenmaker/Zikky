@@ -17,6 +17,9 @@ zig-out/bin/zikky [folder]
 zig build test
 ```
 
+To make `dist/Zikky.app`: `scripts/bundle.sh`. Releases are built from `v*` tags and the app is not
+notarized, so on first launch right-click it and choose Open (or `xattr -cr Zikky.app`).
+
 ## Contributing
 
 Issues and pull requests are welcome.
