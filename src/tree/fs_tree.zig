@@ -1,4 +1,4 @@
-//! Builds the file tree from a directory on disk, ordered like Onyx:
+//! Fills the file tree from disk a folder at a time, ordered like Onyx:
 //! folders first, then files, each in natural case-insensitive order.
 
 const std = @import("std");
@@ -14,29 +14,59 @@ const Entry = struct {
     }
 };
 
-/// Adds `path`'s children under `parent` (null = roots), recursing into folders.
-pub fn addDir(s: *AppState, io: std.Io, path: []const u8, parent: ?u32) void {
+/// Reads folder `node`'s children into the tree, not theirs: folders load when
+/// first shown, so a big folder elsewhere can't fill the tree. Added together,
+/// they are the run of consecutive indices the tree finds children by.
+pub fn load(s: *AppState, io: std.Io, node: u32) void {
+    const n = s.tree.nodes[node];
+    if (!n.is_folder or n.child_count > 0) return;
+    // The opened folder's children keep `root`'s spelling, for `relativePath`.
+    const path = if (node == 0) s.root else s.paths[node];
     var dir = std.Io.Dir.openDir(.cwd(), io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
 
     var entries: std.ArrayList(Entry) = .empty;
     var it = dir.iterate();
     while (it.next(io) catch null) |e| {
-        if ((e.name[0] == '.' and !s.settings.show_hidden) or s.settings.excludes(e.name)) continue;
+        if (skips(s, e.name)) continue;
         const name = s.arena.dupe(u8, e.name) catch return;
         entries.append(s.arena, .{ .name = name, .is_dir = e.kind == .directory }) catch return;
     }
     std.mem.sort(Entry, entries.items, {}, Entry.lessThan);
 
-    // Siblings first: the tree finds a node's children as a run of consecutive indices.
-    const first = s.tree.node_count;
     for (entries.items) |e| {
-        const child = std.fs.path.join(s.arena, &.{ path, e.name }) catch return;
-        _ = s.add(parent, e.name, child, e.is_dir) orelse return;
+        const full = std.fs.path.join(s.arena, &.{ path, e.name }) catch return;
+        _ = s.add(node, e.name, full, e.is_dir) orelse return;
     }
-    for (entries.items, first..) |e, idx| {
-        if (e.is_dir) addDir(s, io, s.paths[idx], @intCast(idx));
+}
+
+/// Loads and expands folder `node`.
+pub fn expand(s: *AppState, io: std.Io, node: u32) void {
+    load(s, io, node);
+    s.tree.expandNode(node);
+}
+
+/// The node at `rel` (a path from the opened folder), loading the folders on the way.
+pub fn find(s: *AppState, io: std.Io, rel: []const u8) ?u32 {
+    var node: u32 = 0;
+    var it = std.mem.tokenizeScalar(u8, rel, '/');
+    while (it.next()) |name| {
+        load(s, io, node);
+        node = child(s, node, name) orelse return null;
     }
+    return node;
+}
+
+fn child(s: *const AppState, parent: u32, name: []const u8) ?u32 {
+    const p = s.tree.nodes[parent];
+    const first = p.first_child orelse return null;
+    for (first..first + p.child_count) |i| if (std.mem.eql(u8, s.names[i], name)) return @intCast(i);
+    return null;
+}
+
+/// Hidden or excluded names stay out of the tree and quick open.
+pub fn skips(s: *const AppState, name: []const u8) bool {
+    return (name[0] == '.' and !s.settings.show_hidden) or s.settings.excludes(name);
 }
 
 /// Onyx's `natural_cmp`: digit runs compare by value, the rest case-insensitively.

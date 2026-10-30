@@ -7,6 +7,7 @@ const theme = @import("../theme.zig");
 const titlebar = @import("../titlebar.zig");
 const AppState = @import("../state.zig").AppState;
 const workspace = @import("workspace.zig");
+const fs_tree = @import("fs_tree.zig");
 const file_kind = @import("../ui/file_kind.zig");
 const IconButton = @import("../ui/icon_button.zig").IconButton;
 const FileIcon = @import("../ui/file_icon.zig").FileIcon;
@@ -207,6 +208,9 @@ fn onRowClick(s: *AppState, g: *gooey.Window, entry_index: u32) void {
     const e = s.tree.getEntry(entry_index) orelse return;
     if (row_menu.isMenuClick(g)) return g.deferCommandWith(e.node_index, row_menu.show);
     if (rename.node == e.node_index) return;
-    if (e.is_folder) return s.tree.toggleExpand(entry_index);
+    if (e.is_folder) {
+        fs_tree.load(s, g.io, e.node_index);
+        return s.tree.toggleExpand(entry_index);
+    }
     tab_actions.open(s, g, e.node_index);
 }

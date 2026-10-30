@@ -5,6 +5,7 @@ const std = @import("std");
 const gooey = @import("gooey");
 const fs_tree = @import("fs_tree.zig");
 const tabs = @import("../editor/tabs.zig");
+const tab_actions = @import("../editor/tab_actions.zig");
 const terminal = @import("../terminal/terminal.zig");
 const session = @import("../session.zig");
 const state = @import("../state.zig");
@@ -16,8 +17,7 @@ pub fn load(s: *AppState, io: std.Io) void {
     if (s.noFolder()) return;
     const full = std.Io.Dir.realPathFileAlloc(.cwd(), io, s.root, s.arena) catch s.root;
     const top = s.add(null, std.fs.path.basename(full), full, true) orelse return;
-    fs_tree.addDir(s, io, s.root, top);
-    s.tree.expandNode(top);
+    fs_tree.expand(s, io, top);
     s.tree.rebuild();
 }
 
@@ -32,6 +32,28 @@ fn promptFolder(s: *AppState, g: *gooey.Window) void {
     defer picked.deinit();
     if (picked.paths.len == 0) return;
     openRoot(s, g, s.arena.dupe(u8, picked.paths[0]) catch return);
+}
+
+/// ⌘O: picks a file and opens it. One outside the opened folder (or with none
+/// open) opens its folder first, as tabs show files of the tree.
+pub fn openFile(_: *AppState, g: *gooey.Window) void {
+    g.deferCommand(promptFile);
+}
+
+fn promptFile(s: *AppState, g: *gooey.Window) void {
+    const picked = gooey.file_dialog.promptForPaths(s.arena, .{ .directories = false, .files = true, .prompt = "Open" }) orelse return;
+    defer picked.deinit();
+    if (picked.paths.len == 0) return;
+    const path = s.arena.dupe(u8, picked.paths[0]) catch return;
+    if (s.noFolder() or !inside(path, s.paths[0])) openRoot(s, g, std.fs.path.dirname(path) orelse return);
+    // After opening its folder, the file is a direct child, however that folder's path is spelled.
+    const rel = if (inside(path, s.paths[0])) path[s.paths[0].len + 1 ..] else std.fs.path.basename(path);
+    const node = session.find(s, g.io, rel) orelse return;
+    tab_actions.open(s, g, node);
+}
+
+fn inside(path: []const u8, dir: []const u8) bool {
+    return path.len > dir.len and std.mem.startsWith(u8, path, dir) and path[dir.len] == '/';
 }
 
 /// With no folder open: just the editor, on an Untitled tab, the sidebar shut.
@@ -79,13 +101,10 @@ pub fn refresh(s: *AppState, g: *gooey.Window, from: []const u8, to: []const u8)
     }
     s.tree.clear();
     load(s, g.io);
-    for (1..s.tree.node_count) |n| {
-        const node: u32 = @intCast(n);
-        for (expanded.items) |e| if (std.mem.eql(u8, e, s.relativePath(node))) s.tree.expandNode(node);
-    }
+    for (expanded.items) |e| if (fs_tree.find(s, g.io, e)) |n| fs_tree.expand(s, g.io, n);
     s.tree.rebuild();
     for (s.tabs.items(), open[0..s.tabs.count]) |*t, rel| {
-        if (t.node != tabs.untitled) t.node = session.find(s, rel) orelse 0;
+        if (t.node != tabs.untitled) t.node = session.find(s, g.io, rel) orelse 0;
     }
 }
 

@@ -80,7 +80,7 @@ fn createFile(s: *AppState, g: *gooey.Window, text: []const u8) ?u32 {
     if (s.noFolder()) workspace.openRoot(s, g, std.fs.path.dirname(path) orelse return null) else workspace.refresh(s, g, "", "");
     const root = s.paths[0];
     if (!std.mem.startsWith(u8, path, root)) return null;
-    return session.find(s, std.mem.trimStart(u8, path[root.len..], "/"));
+    return session.find(s, g.io, std.mem.trimStart(u8, path[root.len..], "/"));
 }
 
 /// A tab's × or ⌘W: closes it, asking first when it has unsaved changes.
