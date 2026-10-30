@@ -16,8 +16,7 @@ pub fn load(s: *AppState, io: std.Io) void {
     if (s.noFolder()) return;
     const full = std.Io.Dir.realPathFileAlloc(.cwd(), io, s.root, s.arena) catch s.root;
     const top = s.add(null, std.fs.path.basename(full), full, true) orelse return;
-    fs_tree.addDir(s, io, s.root, top);
-    s.tree.expandNode(top);
+    fs_tree.expand(s, io, top);
     s.tree.rebuild();
 }
 
@@ -79,13 +78,10 @@ pub fn refresh(s: *AppState, g: *gooey.Window, from: []const u8, to: []const u8)
     }
     s.tree.clear();
     load(s, g.io);
-    for (1..s.tree.node_count) |n| {
-        const node: u32 = @intCast(n);
-        for (expanded.items) |e| if (std.mem.eql(u8, e, s.relativePath(node))) s.tree.expandNode(node);
-    }
+    for (expanded.items) |e| if (fs_tree.find(s, g.io, e)) |n| fs_tree.expand(s, g.io, n);
     s.tree.rebuild();
     for (s.tabs.items(), open[0..s.tabs.count]) |*t, rel| {
-        if (t.node != tabs.untitled) t.node = session.find(s, rel) orelse 0;
+        if (t.node != tabs.untitled) t.node = session.find(s, g.io, rel) orelse 0;
     }
 }
 
