@@ -15,6 +15,7 @@ const fade_label = @import("../ui/fade_label.zig");
 const rename = @import("rename.zig");
 const clickable = @import("../ui/clickable.zig");
 const row_menu = @import("row_menu.zig");
+const move = @import("move.zig");
 const tab_actions = @import("../editor/tab_actions.zig");
 
 const ui = gooey.ui;
@@ -32,7 +33,7 @@ pub const Sidebar = struct {
         cx.render(ui.box(.{
             .width = theme.sidebar_width,
             .grow_height = true,
-        }, .{ Header{}, TreeView{ .s = s } }));
+        }, .{ Header{}, TreeView{ .s = s }, move.Preview{} }));
     }
 };
 
@@ -81,7 +82,7 @@ const label_width = theme.sidebar_width - 13 - 8 - 1 - 9 - 16 - 20;
 
 const Row = struct {
     fn render(entry: *const TreeEntry, cx: *Cx) void {
-        const s = cx.stateConst(AppState);
+        const s = cx.state(AppState);
         const index = indexOf(s, entry);
         const active = s.active() == entry.node_index;
         const look = Look.of(s, entry, active);
@@ -101,6 +102,9 @@ const Row = struct {
                 .hover = if (active) null else theme.color.sidebar_accent.withAlpha(0.65),
                 .on_click = cx.commandWith(index, onRowClick),
             }, .{
+                .draggable = move.source(s, entry.node_index),
+                .drop_target = move.target(cx, s, entry.node_index),
+                .drag_over_background = theme.color.sidebar_accent,
                 .grow_width = true,
                 .height = theme.row_height,
                 .direction = .row,
@@ -206,7 +210,11 @@ const Icon = struct {
 
 fn onRowClick(s: *AppState, g: *gooey.Window, entry_index: u32) void {
     const e = s.tree.getEntry(entry_index) orelse return;
-    if (row_menu.isMenuClick(g)) return g.deferCommandWith(e.node_index, row_menu.show);
+    if (row_menu.isMenuClick(g)) {
+        // The press also readied a drag, and the menu would swallow its release.
+        g.cancelDrag();
+        return g.deferCommandWith(e.node_index, row_menu.show);
+    }
     if (rename.node == e.node_index) return;
     if (e.is_folder) {
         fs_tree.load(s, g.io, e.node_index);
