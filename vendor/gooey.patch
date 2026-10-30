@@ -50,6 +50,69 @@ index 6f9109d..eceb3f7 100644
                  .tab_index = self.tab_index,
                  .tab_stop = self.tab_stop,
                  .on_blur_handler = self.on_blur,
+diff --git a/src/context/dispatch.zig b/src/context/dispatch.zig
+index e7128ca..05db7e8 100644
+--- a/src/context/dispatch.zig
++++ b/src/context/dispatch.zig
+@@ -121,6 +121,9 @@ pub const DispatchNode = struct {
+     /// Bounding box for hit testing (set after layout)
+     bounds: ?BoundingBox = null,
+ 
++    /// Where scroll containers leave this node visible; clicks outside miss it.
++    clip: ?BoundingBox = null,
++
+     /// Z-index for layering (higher = on top, used in hit testing)
+     z_index: i16 = 0,
+ 
+@@ -408,6 +411,7 @@ pub const DispatchTree = struct {
+             node.last_child = .invalid;
+             node.next_sibling = .invalid;
+             node.bounds = null;
++            node.clip = null;
+             node.z_index = 0;
+             node.has_floating_descendant = false;
+             node.layout_id = null;
+@@ -583,7 +587,8 @@ pub const DispatchTree = struct {
+             const node = self.getNodeConst(current_id) orelse continue;
+ 
+             // Check if this node contains the point.
+-            const contains_point = if (node.bounds) |bounds|
++            const in_clip = if (node.clip) |clip| clip.contains(x, y) else true;
++            const contains_point = in_clip and if (node.bounds) |bounds|
+                 x >= bounds.x and x < bounds.x + bounds.width and
+                     y >= bounds.y and y < bounds.y + bounds.height
+             else
+@@ -1221,6 +1226,30 @@ test "DispatchTree z-index aware hit testing" {
+     try std.testing.expectEqual(root, hit4.?);
+ }
+ 
++test "DispatchTree hit testing respects a node's clip" {
++    const allocator = std.testing.allocator;
++    var tree = DispatchTree.init(allocator);
++    defer tree.deinit();
++
++    // A header over y 0..40 and a row scrolled up under it (y 10..30), clipped to y 40..200.
++    const root = tree.pushNode();
++    tree.setBounds(root, .{ .x = 0, .y = 0, .width = 200, .height = 200 });
++    const button = tree.pushNode();
++    tree.setBounds(button, .{ .x = 0, .y = 0, .width = 40, .height = 40 });
++    tree.popNode();
++    const row = tree.pushNode();
++    tree.setBounds(row, .{ .x = 0, .y = 10, .width = 200, .height = 20 });
++    tree.getNode(row).?.clip = .{ .x = 0, .y = 40, .width = 200, .height = 160 };
++    tree.popNode();
++    tree.popNode();
++
++    try std.testing.expectEqual(button, tree.hitTest(20, 20).?);
++    // A row inside its clip is still hit.
++    tree.getNode(row).?.clip = .{ .x = 0, .y = 0, .width = 200, .height = 200 };
++    tree.setBounds(row, .{ .x = 0, .y = 100, .width = 200, .height = 20 });
++    try std.testing.expectEqual(row, tree.hitTest(20, 110).?);
++}
++
+ test "DispatchTree z-index equal prefers DOM order" {
+     const allocator = std.testing.allocator;
+     var tree = DispatchTree.init(allocator);
 diff --git a/src/context/window.zig b/src/context/window.zig
 index 701f6f8..04cdeb2 100644
 --- a/src/context/window.zig
@@ -176,6 +239,33 @@ index 29552a3..1899b62 100644
  };
  
  pub const KeyEvent = struct {
+diff --git a/src/layout/engine.zig b/src/layout/engine.zig
+index 6d25b08..831defc 100644
+--- a/src/layout/engine.zig
++++ b/src/layout/engine.zig
+@@ -634,4 +634,22 @@ pub const LayoutEngine = struct {
+         const index = self.id_to_index.get(id) orelse return 0;
+         return self.elements.getConst(index).cached_z_index;
+     }
++
++    /// Area an element is visible in: the intersection of its scroll-container
++    /// ancestors' boxes (those draw a scissor), or null when nothing clips it.
++    /// A floating element escapes its ancestors' clips.
++    pub fn getClipBox(self: *const Self, id: u32) ?BoundingBox {
++        var next: ?u32 = self.id_to_index.get(id);
++        var clip: ?BoundingBox = null;
++        while (next) |i| {
++            const e = self.elements.getConst(i);
++            if (e.config.scroll != null) {
++                const box = e.computed.bounding_box;
++                clip = if (clip) |c| c.intersection(box) else box;
++            }
++            if (e.config.floating != null) break;
++            next = e.parent_index;
++        }
++        return clip;
++    }
+ };
 diff --git a/src/platform/interface.zig b/src/platform/interface.zig
 index 3f6f814..35665cf 100644
 --- a/src/platform/interface.zig
@@ -191,6 +281,33 @@ index 3f6f814..35665cf 100644
      /// Effective clear color for this configuration.
      ///
      /// A glass style requires a transparent clear so the host-composited
+diff --git a/src/platform/macos/alert.zig b/src/platform/macos/alert.zig
+new file mode 100644
+index 0000000..d4c33a0
+--- /dev/null
++++ b/src/platform/macos/alert.zig
+@@ -0,0 +1,21 @@
++//! A modal NSAlert with a message and buttons.
++
++const objc = @import("objc");
++
++fn string(s: [:0]const u8) objc.c.id {
++    const NSString = objc.getClass("NSString").?;
++    return NSString.msgSend(objc.c.id, "stringWithUTF8String:", .{s.ptr});
++}
++
++/// Returns the index of the clicked button; the first is the default.
++/// It runs a nested event loop, so call it after input handling (`deferCommand`).
++pub fn ask(message: [:0]const u8, info: [:0]const u8, buttons: []const [:0]const u8) ?usize {
++    const NSAlert = objc.getClass("NSAlert") orelse return null;
++    const alert = NSAlert.msgSend(objc.Object, "new", .{});
++    alert.msgSend(void, "setMessageText:", .{string(message)});
++    alert.msgSend(void, "setInformativeText:", .{string(info)});
++    for (buttons) |b| _ = alert.msgSend(objc.c.id, "addButtonWithTitle:", .{string(b)});
++    const first = 1000; // NSAlertFirstButtonReturn
++    const clicked = alert.msgSend(c_long, "runModal", .{});
++    return if (clicked < first) null else @intCast(clicked - first);
++}
 diff --git a/src/platform/macos/appearance.zig b/src/platform/macos/appearance.zig
 new file mode 100644
 index 0000000..f7985d9
@@ -574,18 +691,40 @@ index 0aabba4..08643ea 100644
      \\}
  ;
 diff --git a/src/platform/macos/mod.zig b/src/platform/macos/mod.zig
-index 4c40155..55c61f8 100644
+index 4c40155..a2e1061 100644
 --- a/src/platform/macos/mod.zig
 +++ b/src/platform/macos/mod.zig
-@@ -39,6 +39,8 @@ pub const display_link = @import("display_link.zig");
+@@ -39,6 +39,10 @@ pub const display_link = @import("display_link.zig");
  // System services
  pub const clipboard = @import("clipboard.zig");
  pub const file_dialog = @import("file_dialog.zig");
 +pub const menu = @import("menu.zig");
++pub const alert = @import("alert.zig");
++pub const trash = @import("trash.zig");
 +pub const appearance = @import("appearance.zig");
  
  // Low-level bindings
  pub const appkit = @import("appkit.zig");
+diff --git a/src/platform/macos/trash.zig b/src/platform/macos/trash.zig
+new file mode 100644
+index 0000000..2d7e8f8
+--- /dev/null
++++ b/src/platform/macos/trash.zig
+@@ -0,0 +1,14 @@
++//! Moves a file or folder to the Trash.
++
++const objc = @import("objc");
++
++/// True once `path` is in the Trash (Finder's Put Back keeps working).
++pub fn move(path: [:0]const u8) bool {
++    const NSString = objc.getClass("NSString") orelse return false;
++    const NSURL = objc.getClass("NSURL") orelse return false;
++    const NSFileManager = objc.getClass("NSFileManager") orelse return false;
++    const string = NSString.msgSend(objc.c.id, "stringWithUTF8String:", .{path.ptr});
++    const url = NSURL.msgSend(objc.c.id, "fileURLWithPath:", .{string});
++    const manager = NSFileManager.msgSend(objc.Object, "defaultManager", .{});
++    return manager.msgSend(bool, "trashItemAtURL:resultingItemURL:error:", .{ url, @as(?*anyopaque, null), @as(?*anyopaque, null) });
++}
 diff --git a/src/platform/macos/window.zig b/src/platform/macos/window.zig
 index 58db814..509cbf9 100644
 --- a/src/platform/macos/window.zig
@@ -1064,7 +1203,7 @@ index 11b2615..68f018d 100644
      \\    }
      \\}
 diff --git a/src/runtime/frame.zig b/src/runtime/frame.zig
-index c747a60..5961915 100644
+index c747a60..980843b 100644
 --- a/src/runtime/frame.zig
 +++ b/src/runtime/frame.zig
 @@ -84,6 +84,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
@@ -1075,7 +1214,15 @@ index c747a60..5961915 100644
  
      // App-scoped per-tick hook: drains async image-load results into the
      // shared atlas and clears stale entity observations from the previous
-@@ -177,10 +178,6 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
+@@ -145,6 +146,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
+     for (window.next_frame.dispatch.nodes.items) |*node| {
+         if (node.layout_id) |layout_id| {
+             node.bounds = window.layout.getBoundingBox(layout_id);
++            node.clip = window.layout.getClipBox(layout_id);
+             node.z_index = window.layout.getZIndex(layout_id);
+         }
+     }
+@@ -177,10 +179,6 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
      // Register blur handlers from pending items
      registerBlurHandlers(window, builder);
  
@@ -1086,7 +1233,7 @@ index c747a60..5961915 100644
      // Render canvas elements (custom vector graphics)
      renderCanvasElements(window, builder);
  
-@@ -204,6 +201,12 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
+@@ -204,6 +202,12 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
          window.requestRender();
      }
  
@@ -1099,7 +1246,7 @@ index c747a60..5961915 100644
      // Finalize frame timing for profiler
      window.finalizeFrame();
  
-@@ -264,9 +267,19 @@ fn registerBlurHandlers(window: *Window, builder: *const Builder) void {
+@@ -264,9 +268,19 @@ fn registerBlurHandlers(window: *Window, builder: *const Builder) void {
      }
  }
  
@@ -1120,7 +1267,7 @@ index c747a60..5961915 100644
          // Check if this command's element corresponds to a pending canvas
          // If so, reserve a draw order now (in correct z-order) for later canvas painting
          for (builder.pending_canvas.items) |*pending| {
-@@ -291,6 +304,7 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
+@@ -291,6 +305,7 @@ fn renderCommands(window: *Window, builder: *Builder, commands: []const layout_m
              }
          }
      }
@@ -1128,7 +1275,7 @@ index c747a60..5961915 100644
  }
  
  /// Render all pending canvas elements
-@@ -306,13 +320,20 @@ fn renderCanvasElements(window: *Window, builder: *const Builder) void {
+@@ -306,13 +321,20 @@ fn renderCanvasElements(window: *Window, builder: *const Builder) void {
      }
  }
  
@@ -1153,7 +1300,7 @@ index c747a60..5961915 100644
          switch (entry.kind) {
              .input => {
                  std.debug.assert(entry.index < builder.pending_inputs.items.len);
-@@ -403,11 +424,22 @@ fn renderTextArea(window: *Window, pending: *const Builder.PendingTextArea) !voi
+@@ -403,11 +425,22 @@ fn renderTextArea(window: *Window, pending: *const Builder.PendingTextArea) !voi
      ta_widget.style.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
      ta_widget.style.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
      ta_widget.style.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
@@ -1176,7 +1323,7 @@ index c747a60..5961915 100644
  /// Render a single pending code editor.
  fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor) !void {
      const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse return;
-@@ -423,6 +455,7 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor)
+@@ -423,6 +456,7 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor)
  
      // Update code editor specific settings
      ce_widget.show_line_numbers = pending.style.show_line_numbers;
@@ -1184,7 +1331,7 @@ index c747a60..5961915 100644
      ce_widget.gutter_width = pending.style.gutter_width;
      ce_widget.tab_size = pending.style.tab_size;
      ce_widget.use_hard_tabs = pending.style.use_hard_tabs;
-@@ -437,6 +470,10 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor)
+@@ -437,6 +471,10 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor)
      ce_widget.style.current_line_number_color = render_bridge.colorToHsla(pending.style.current_line_number_color);
      ce_widget.style.gutter_separator_color = render_bridge.colorToHsla(pending.style.gutter_separator_color);
      ce_widget.style.current_line_background = render_bridge.colorToHsla(pending.style.current_line_background);
@@ -1195,7 +1342,7 @@ index c747a60..5961915 100644
  
      // Status bar settings
      ce_widget.show_status_bar = pending.style.show_status_bar;
-@@ -446,9 +483,16 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor)
+@@ -446,9 +484,16 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor)
      ce_widget.style.status_bar_separator_color = render_bridge.colorToHsla(pending.style.status_bar_separator_color);
      ce_widget.language_mode = pending.style.language_mode;
      ce_widget.encoding = pending.style.encoding;

@@ -634,4 +634,22 @@ pub const LayoutEngine = struct {
         const index = self.id_to_index.get(id) orelse return 0;
         return self.elements.getConst(index).cached_z_index;
     }
+
+    /// Area an element is visible in: the intersection of its scroll-container
+    /// ancestors' boxes (those draw a scissor), or null when nothing clips it.
+    /// A floating element escapes its ancestors' clips.
+    pub fn getClipBox(self: *const Self, id: u32) ?BoundingBox {
+        var next: ?u32 = self.id_to_index.get(id);
+        var clip: ?BoundingBox = null;
+        while (next) |i| {
+            const e = self.elements.getConst(i);
+            if (e.config.scroll != null) {
+                const box = e.computed.bounding_box;
+                clip = if (clip) |c| c.intersection(box) else box;
+            }
+            if (e.config.floating != null) break;
+            next = e.parent_index;
+        }
+        return clip;
+    }
 };

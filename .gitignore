@@ -2,3 +2,5 @@
 zig-out/
 zig-pkg/
 .DS_Store
+/AGENTS.md
+/dist/

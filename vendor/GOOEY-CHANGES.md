@@ -142,6 +142,9 @@ Files: `src/context/window.zig`*, `src/input/actions.zig`, `src/runtime/input.zi
 - Native menus (`platform/macos/menu.zig`): `setMainMenu` (items send an AppKit action or
   replay their keystroke via `gooeyMenuKey:`), `popUp` context menus, `popUpSelect` (the current
   item checked and opened under the mouse, like a pop-up button).
+- `alert.ask` (`platform/macos/alert.zig`): a modal NSAlert with a message and buttons; returns the
+  clicked index.
+- `trash.move` (`platform/macos/trash.zig`): moves a file or folder to the Trash.
 - Appearance (`platform/macos/appearance.zig`): `set` NSApp's appearance (light, dark, or the
   system's) and `isDark`, an atomic so render threads can read it; views update it and re-render
   on `viewDidChangeEffectiveAppearance`, so an app following the system switches live.
@@ -152,7 +155,8 @@ Files: `src/context/window.zig`*, `src/input/actions.zig`, `src/runtime/input.zi
   windows initialised in place (the a11y bridge points into the window); teardown owns the
   NSWindow (`releasedWhenClosed` off) and releases its view; views accept the first click.
 
-Files: `src/platform/macos/menu.zig` (new), `src/platform/macos/appearance.zig` (new),
+Files: `src/platform/macos/menu.zig` (new), `src/platform/macos/alert.zig` (new), `src/platform/macos/trash.zig` (new),
+`src/platform/macos/appearance.zig` (new),
 `src/platform/macos/input_view.zig`*, `src/platform/macos/mod.zig`,
 `src/platform/macos/window.zig`*, `src/platform/macos/window_delegate.zig`,
 `src/platform/interface.zig`, `src/platform/unified.zig`*, `src/runtime/runner.zig`,
@@ -205,3 +209,16 @@ never got its clicks, and the editor took the focus.
   area and code editor claims are skipped and the click dispatches to the floating element.
 
 Files: `src/runtime/input.zig`.
+
+## 13. Hit testing respects scroll clips
+
+A list's rows scrolled out of view (the overdraw rows above the viewport) stayed in the dispatch
+tree with their layout bounds, so a click on whatever sits over the list's edge (the sidebar's
+hide button over the file tree) went to the invisible row.
+
+- `LayoutEngine.getClipBox`: the intersection of a node's scroll-container ancestors' boxes
+  (the ones that draw a scissor); a floating element escapes them.
+- `DispatchNode.clip` is set with the bounds each frame; `hitTest` also requires the point
+  inside it.
+
+Files: `src/layout/engine.zig`, `src/context/dispatch.zig`, `src/runtime/frame.zig`*.

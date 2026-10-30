@@ -121,6 +121,9 @@ pub const DispatchNode = struct {
     /// Bounding box for hit testing (set after layout)
     bounds: ?BoundingBox = null,
 
+    /// Where scroll containers leave this node visible; clicks outside miss it.
+    clip: ?BoundingBox = null,
+
     /// Z-index for layering (higher = on top, used in hit testing)
     z_index: i16 = 0,
 
@@ -408,6 +411,7 @@ pub const DispatchTree = struct {
             node.last_child = .invalid;
             node.next_sibling = .invalid;
             node.bounds = null;
+            node.clip = null;
             node.z_index = 0;
             node.has_floating_descendant = false;
             node.layout_id = null;
@@ -583,7 +587,8 @@ pub const DispatchTree = struct {
             const node = self.getNodeConst(current_id) orelse continue;
 
             // Check if this node contains the point.
-            const contains_point = if (node.bounds) |bounds|
+            const in_clip = if (node.clip) |clip| clip.contains(x, y) else true;
+            const contains_point = in_clip and if (node.bounds) |bounds|
                 x >= bounds.x and x < bounds.x + bounds.width and
                     y >= bounds.y and y < bounds.y + bounds.height
             else
@@ -1219,6 +1224,30 @@ test "DispatchTree z-index aware hit testing" {
     // Hit test outside both children but inside root
     const hit4 = tree.hitTest(180, 180);
     try std.testing.expectEqual(root, hit4.?);
+}
+
+test "DispatchTree hit testing respects a node's clip" {
+    const allocator = std.testing.allocator;
+    var tree = DispatchTree.init(allocator);
+    defer tree.deinit();
+
+    // A header over y 0..40 and a row scrolled up under it (y 10..30), clipped to y 40..200.
+    const root = tree.pushNode();
+    tree.setBounds(root, .{ .x = 0, .y = 0, .width = 200, .height = 200 });
+    const button = tree.pushNode();
+    tree.setBounds(button, .{ .x = 0, .y = 0, .width = 40, .height = 40 });
+    tree.popNode();
+    const row = tree.pushNode();
+    tree.setBounds(row, .{ .x = 0, .y = 10, .width = 200, .height = 20 });
+    tree.getNode(row).?.clip = .{ .x = 0, .y = 40, .width = 200, .height = 160 };
+    tree.popNode();
+    tree.popNode();
+
+    try std.testing.expectEqual(button, tree.hitTest(20, 20).?);
+    // A row inside its clip is still hit.
+    tree.getNode(row).?.clip = .{ .x = 0, .y = 0, .width = 200, .height = 200 };
+    tree.setBounds(row, .{ .x = 0, .y = 100, .width = 200, .height = 20 });
+    try std.testing.expectEqual(row, tree.hitTest(20, 110).?);
 }
 
 test "DispatchTree z-index equal prefers DOM order" {

@@ -4,7 +4,7 @@
 
 const gooey = @import("gooey");
 const theme = @import("theme.zig");
-const Mode = @import("settings.zig").Settings.Appearance;
+const Mode = @import("settings/settings.zig").Settings.Appearance;
 
 const mac = gooey.platform.macos;
 
