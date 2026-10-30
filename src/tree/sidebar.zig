@@ -25,10 +25,6 @@ const Lucide = components.Lucide;
 /// Shows or hides the sidebar (⌘\, like Onyx).
 pub const ToggleSidebar = struct {};
 
-pub fn bindKeys(g: *gooey.Window) void {
-    g.keymap().bind(ToggleSidebar, "cmd-\\", null);
-}
-
 pub const Sidebar = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);

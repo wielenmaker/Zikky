@@ -14,8 +14,13 @@ pub const Settings = struct {
     /// Comma-separated folder names the tree skips.
     exclude: []const u8 = ".git, .zig-cache, node_modules, target, zig-out, zig-pkg",
     restore_session: bool = true,
+    /// Shortcuts changed from their defaults (Settings › Keyboard).
+    shortcuts: []const Shortcut = &.{},
 
     pub const file = "settings.json";
+
+    /// A `shortcuts.Id` name and its keys ("cmd-shift-o"); "" for none.
+    pub const Shortcut = struct { id: []const u8, keys: []const u8 };
 
     pub const Appearance = enum { system, light, dark };
 

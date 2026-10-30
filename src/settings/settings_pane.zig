@@ -14,6 +14,7 @@ const Stepper = @import("../ui/stepper.zig").Stepper;
 const ThemeTiles = @import("theme_tiles.zig").ThemeTiles;
 const SettingsPreview = @import("settings_preview.zig").SettingsPreview;
 const FontButton = @import("font_button.zig").FontButton;
+const ShortcutField = @import("shortcut_field.zig").ShortcutField;
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -176,7 +177,7 @@ const Control = struct {
         const s = cx.state(AppState);
         switch (self.control) {
             .theme, .preview => {},
-            .keys => |k| cx.render(ui.text(k, .{ .size = theme.settings.text_size, .color = theme.color.muted })),
+            .shortcut => |id| cx.render(ShortcutField{ .id = id }),
             .font => cx.render(FontButton{}),
             .toggle => |sw| cx.render(Toggle{ .on = s.settings.get(sw), .on_click = cx.commandWith(sw, settings_actions.flip) }),
             .font_size => cx.render(Stepper{
