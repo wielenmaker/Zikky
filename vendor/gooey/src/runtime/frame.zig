@@ -146,6 +146,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     for (window.next_frame.dispatch.nodes.items) |*node| {
         if (node.layout_id) |layout_id| {
             node.bounds = window.layout.getBoundingBox(layout_id);
+            node.clip = window.layout.getClipBox(layout_id);
             node.z_index = window.layout.getZIndex(layout_id);
         }
     }

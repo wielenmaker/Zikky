@@ -208,3 +208,16 @@ never got its clicks, and the editor took the focus.
   area and code editor claims are skipped and the click dispatches to the floating element.
 
 Files: `src/runtime/input.zig`.
+
+## 13. Hit testing respects scroll clips
+
+A list's rows scrolled out of view (the overdraw rows above the viewport) stayed in the dispatch
+tree with their layout bounds, so a click on whatever sits over the list's edge (the sidebar's
+hide button over the file tree) went to the invisible row.
+
+- `LayoutEngine.getClipBox`: the intersection of a node's scroll-container ancestors' boxes
+  (the ones that draw a scissor); a floating element escapes them.
+- `DispatchNode.clip` is set with the bounds each frame; `hitTest` also requires the point
+  inside it.
+
+Files: `src/layout/engine.zig`, `src/context/dispatch.zig`, `src/runtime/frame.zig`*.
