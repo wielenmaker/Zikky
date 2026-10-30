@@ -2,27 +2,27 @@ const std = @import("std");
 const gooey = @import("gooey");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
-const workspace = @import("workspace.zig");
-const tab_actions = @import("tab_actions.zig");
-const settings_actions = @import("settings_actions.zig");
-const picker = @import("picker.zig");
-const font_actions = @import("font_actions.zig");
-const sidebar = @import("sidebar.zig");
-const EditorPanel = @import("editor_panel.zig").EditorPanel;
-const editor_font = @import("editor_font.zig");
+const workspace = @import("tree/workspace.zig");
+const tab_actions = @import("editor/tab_actions.zig");
+const settings_actions = @import("settings/settings_actions.zig");
+const picker = @import("overlays/picker.zig");
+const font_actions = @import("editor/font_actions.zig");
+const sidebar = @import("tree/sidebar.zig");
+const EditorPanel = @import("editor/editor_panel.zig").EditorPanel;
+const editor_font = @import("editor/editor_font.zig");
 const app_menu = @import("app_menu.zig");
 const store = @import("store.zig");
-const Settings = @import("settings.zig").Settings;
+const Settings = @import("settings/settings.zig").Settings;
 const session = @import("session.zig");
-const settings_window = @import("settings_window.zig");
-const PickerView = @import("picker_view.zig").PickerView;
+const settings_window = @import("settings/settings_window.zig");
+const PickerView = @import("overlays/picker_view.zig").PickerView;
 const appearance = @import("appearance.zig");
-const find = @import("find.zig");
-const palette = @import("palette.zig");
-const PaletteView = @import("palette_view.zig").PaletteView;
-const terminal = @import("terminal.zig");
+const find = @import("editor/find.zig");
+const palette = @import("overlays/palette.zig");
+const PaletteView = @import("overlays/palette_view.zig").PaletteView;
+const terminal = @import("terminal/terminal.zig");
 const welcome = @import("welcome.zig");
-const save = @import("save.zig");
+const save = @import("editor/save.zig");
 const assets = @import("assets");
 
 const ui = gooey.ui;
@@ -116,15 +116,15 @@ fn mainWindow() gooey.runtime.AppWindowOptions {
 }
 
 test {
-    _ = @import("fs_tree.zig");
-    _ = @import("file_kind.zig");
-    _ = @import("syntax.zig");
-    _ = @import("syntax_markup.zig");
-    _ = @import("vim_motion.zig");
-    _ = @import("settings.zig");
-    _ = @import("fuzzy.zig");
-    _ = @import("find.zig");
-    _ = @import("palette.zig");
+    _ = @import("tree/fs_tree.zig");
+    _ = @import("ui/file_kind.zig");
+    _ = @import("syntax/syntax.zig");
+    _ = @import("syntax/syntax_markup.zig");
+    _ = @import("vim/vim_motion.zig");
+    _ = @import("settings/settings.zig");
+    _ = @import("overlays/fuzzy.zig");
+    _ = @import("editor/find.zig");
+    _ = @import("overlays/palette.zig");
 }
 
 /// `zikky [folder]` opens `folder`; without one, the last session's folder

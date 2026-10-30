@@ -7,8 +7,8 @@ const std = @import("std");
 const gooey = @import("gooey");
 const store = @import("store.zig");
 const AppState = @import("state.zig").AppState;
-const tab_actions = @import("tab_actions.zig");
-const tabs = @import("tabs.zig");
+const tab_actions = @import("editor/tab_actions.zig");
+const tabs = @import("editor/tabs.zig");
 
 pub const Session = struct {
     folder: []const u8 = "",

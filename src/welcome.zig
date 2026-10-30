@@ -6,9 +6,9 @@ const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
-const workspace = @import("workspace.zig");
-const fade_label = @import("fade_label.zig");
-const clickable = @import("clickable.zig");
+const workspace = @import("tree/workspace.zig");
+const fade_label = @import("ui/fade_label.zig");
+const clickable = @import("ui/clickable.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
