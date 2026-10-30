@@ -35,7 +35,13 @@ pub const SettingsPane = struct {
             .gap = 12,
         }, .{
             Header{ .title = pane.name },
-            Sections{ .pane = pane, .width = self.width - 28 },
+            // Long panes (Keyboard) scroll under the header.
+            ui.scroll("settings-scroll", .{
+                .fill_width = true,
+                .grow_height = true,
+                .scrollbar_size = 6,
+                .thumb_color = theme.color.scrollbar,
+            }, .{Sections{ .pane = pane, .width = self.width - 28 }}),
         }));
     }
 };
@@ -170,6 +176,7 @@ const Control = struct {
         const s = cx.state(AppState);
         switch (self.control) {
             .theme, .preview => {},
+            .keys => |k| cx.render(ui.text(k, .{ .size = theme.settings.text_size, .color = theme.color.muted })),
             .font => cx.render(FontButton{}),
             .toggle => |sw| cx.render(Toggle{ .on = s.settings.get(sw), .on_click = cx.commandWith(sw, settings_actions.flip) }),
             .font_size => cx.render(Stepper{
