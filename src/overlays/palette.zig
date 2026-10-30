@@ -42,10 +42,6 @@ pub const Palette = struct {
     }
 };
 
-pub fn bindKeys(g: *gooey.Window) void {
-    g.keymap().bind(Open, "cmd-shift-p", null);
-}
-
 /// ⌘⇧P: opens the palette, or closes it when it shows.
 pub fn toggle(s: *AppState, g: *gooey.Window) void {
     if (s.palette.open) return close(s, g);

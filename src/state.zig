@@ -11,6 +11,7 @@ const find = @import("editor/find.zig");
 const palette = @import("overlays/palette.zig");
 const terminal = @import("terminal/terminal.zig");
 const Settings = @import("settings/settings.zig").Settings;
+const shortcuts = @import("shortcuts/shortcuts.zig");
 
 const TreeListState = gooey.widgets.TreeListState;
 const CodeEditorState = gooey.widgets.CodeEditorState;
@@ -36,6 +37,8 @@ pub const AppState = struct {
     settings_query: []const u8 = "",
     /// The excluded-folders field while it is edited; applied when it loses focus.
     exclude_edit: []const u8 = "",
+    /// The shortcut taking new keys (Settings › Keyboard).
+    recording: ?shortcuts.Id = null,
     /// Quick open (⌘O / ⌘P).
     picker: picker.Picker = .{},
     /// The command palette (⌘⇧P).
