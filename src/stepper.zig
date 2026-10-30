@@ -3,6 +3,7 @@
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
+const clickable = @import("clickable.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -41,13 +42,11 @@ const Step = struct {
     on_click: ui.HandlerRef,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
+        cx.render(clickable.box(.{ .hover = theme.color.settings.selected.withAlpha(0.6), .on_click = self.on_click }, .{
             .width = 28,
             .height = 22,
             .corner_radius = 11,
             .alignment = .{ .main = .center, .cross = .center },
-            .hover_background = theme.color.settings.selected.withAlpha(0.6),
-            .on_click_handler = self.on_click,
         }, .{
             Svg{ .path = self.icon, .size = 12, .no_fill = true, .stroke_color = theme.color.settings.label, .stroke_width = 1.5 },
         }));

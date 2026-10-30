@@ -10,6 +10,7 @@ const file_kind = @import("file_kind.zig");
 const IconButton = @import("icon_button.zig").IconButton;
 const FileIcon = @import("file_icon.zig").FileIcon;
 const fade_label = @import("fade_label.zig");
+const clickable = @import("clickable.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -91,7 +92,11 @@ const Row = struct {
             .padding = .{ .each = .{ .top = 0, .right = 8, .bottom = 0, .left = 13 } },
         }, .{
             Guides{ .depth = entry.depth },
-            ui.box(.{
+            clickable.box(.{
+                .fill = if (active) theme.color.background else Color.transparent,
+                .hover = if (active) null else theme.color.sidebar_accent.withAlpha(0.65),
+                .on_click = cx.commandWith(index, AppState.onRowClick),
+            }, .{
                 .grow_width = true,
                 .height = theme.row_height,
                 .direction = .row,
@@ -101,10 +106,7 @@ const Row = struct {
                 .corner_radius = theme.radius,
                 .border_width = .{ .all = 1 },
                 .border_color = if (active) theme.color.border.withAlpha(0.7) else Color.transparent,
-                .background = if (active) theme.color.background else Color.transparent,
-                .hover_background = if (active) null else theme.color.sidebar_accent.withAlpha(0.65),
                 .shadow = if (active) theme.shadow_xs else null,
-                .on_click_handler = cx.commandWith(index, AppState.onRowClick),
             }, .{
                 Icon{ .kind = .{ .icon = chevron(entry), .color = theme.color.muted }, .size = 12, .slot = 16, .center = true },
                 Icon{ .kind = look.kind, .size = 14, .slot = 20, .center = false },

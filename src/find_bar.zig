@@ -6,6 +6,7 @@ const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
 const find = @import("find.zig");
+const clickable = @import("clickable.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -74,13 +75,14 @@ const Button = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const c = theme.color;
-        cx.render(ui.box(.{
+        cx.render(clickable.box(.{
+            .hover = if (self.enabled) c.sidebar_accent else null,
+            .on_click = if (self.enabled) self.on_click else null,
+        }, .{
             .width = 24,
             .height = 24,
             .corner_radius = 12,
             .alignment = .{ .main = .center, .cross = .center },
-            .hover_background = if (self.enabled) c.sidebar_accent else null,
-            .on_click_handler = if (self.enabled) self.on_click else null,
         }, .{
             Svg{ .path = self.icon, .size = 15, .no_fill = true, .stroke_color = if (self.enabled) c.muted else c.muted.withAlpha(0.4), .stroke_width = 1.6 },
         }));

@@ -6,6 +6,7 @@ const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
 const panes = @import("settings_panes.zig");
+const clickable = @import("clickable.zig");
 const Toggle = @import("toggle.zig").Toggle;
 const Stepper = @import("stepper.zig").Stepper;
 const ThemeTiles = @import("theme_tiles.zig").ThemeTiles;
@@ -67,13 +68,11 @@ const Nav = struct {
     on_click: ui.HandlerRef,
 
     pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
+        cx.render(clickable.box(.{ .hover = theme.color.settings.selected, .on_click = self.on_click }, .{
             .width = 32,
             .height = 28,
             .corner_radius = 14,
             .alignment = .{ .main = .center, .cross = .center },
-            .hover_background = theme.color.settings.selected,
-            .on_click_handler = self.on_click,
         }, .{
             Svg{ .path = self.icon, .size = 16, .no_fill = true, .stroke_color = theme.color.settings.label, .stroke_width = 1.6 },
         }));
