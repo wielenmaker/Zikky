@@ -5,6 +5,7 @@
 const gooey = @import("gooey");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
+const settings_actions = @import("settings_actions.zig");
 const Mode = @import("settings.zig").Settings.Appearance;
 
 const ui = gooey.ui;
@@ -36,7 +37,7 @@ const Tile = struct {
         cx.render(ui.box(.{
             .alignment = .{ .cross = .center },
             .gap = 4,
-            .on_click_handler = cx.commandWith(self.mode, AppState.setAppearance),
+            .on_click_handler = cx.commandWith(self.mode, settings_actions.setAppearance),
         }, .{
             ui.box(.{
                 .padding = .{ .all = 2 },

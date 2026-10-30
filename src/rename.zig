@@ -5,6 +5,7 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const AppState = @import("state.zig").AppState;
+const workspace = @import("workspace.zig");
 
 pub const input_id = "rename-input";
 
@@ -42,7 +43,7 @@ fn commit(s: *AppState, g: *gooey.Window) void {
     std.Io.Dir.rename(.cwd(), old, .cwd(), new, g.io) catch return;
     const from = s.relativePath(row);
     const to = if (std.fs.path.dirname(from)) |dir| std.fs.path.join(s.arena, &.{ dir, name }) catch return else name;
-    s.refreshTree(g, from, to);
+    workspace.refresh(s, g, from, to);
 }
 
 /// While the field is focused: Enter commits, Esc cancels.

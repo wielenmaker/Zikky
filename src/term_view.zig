@@ -50,7 +50,7 @@ pub const TermPanel = struct {
             session.snapshot();
             build(session) catch {};
         }
-        const focused = s.term_focus;
+        const focused = s.term.focus;
         cx.render(ui.box(.{
             .width = self.width,
             .height = self.height,
@@ -81,7 +81,7 @@ const Grid = struct {
             .cell_w = s.cell_w,
             .cell_h = s.cell_h,
             .style = cur.visual_style,
-            .focused = s.term_focus,
+            .focused = s.term.focus,
         });
     }
 };

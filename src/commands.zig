@@ -3,6 +3,12 @@
 
 const gooey = @import("gooey");
 const AppState = @import("state.zig").AppState;
+const workspace = @import("workspace.zig");
+const terminal = @import("terminal.zig");
+const tab_actions = @import("tab_actions.zig");
+const settings_actions = @import("settings_actions.zig");
+const picker = @import("picker.zig");
+const font_actions = @import("font_actions.zig");
 const Settings = @import("settings.zig").Settings;
 const find = @import("find.zig");
 const save = @import("save.zig");
@@ -18,18 +24,18 @@ pub const Command = struct {
 };
 
 pub const root = [_]Command{
-    .{ .title = "Find File…", .keys = "⌘O", .run = AppState.openPicker },
-    .{ .title = "Open Folder…", .keys = "⇧⌘O", .run = AppState.openFolder },
+    .{ .title = "Find File…", .keys = "⌘O", .run = picker.open },
+    .{ .title = "Open Folder…", .keys = "⇧⌘O", .run = workspace.openFolder },
     .{ .title = "Save", .keys = "⌘S", .run = save.run },
-    .{ .title = "Close Tab", .keys = "⌘W", .run = AppState.close },
+    .{ .title = "Close Tab", .keys = "⌘W", .run = tab_actions.closeShown },
     .{ .title = "Find in File", .keys = "⌘F", .run = find.open },
     .{ .title = "Find Next", .keys = "⌘G", .run = find.next },
     .{ .title = "Find Previous", .keys = "⇧⌘G", .run = find.prev },
     .{ .title = "Toggle Sidebar", .keys = "⌘\\", .run = AppState.toggleSidebar },
-    .{ .title = "Toggle Terminal", .keys = "⌘J", .run = AppState.toggleTerminal },
-    .{ .title = "Zoom In", .keys = "⌘+", .run = AppState.zoomIn },
-    .{ .title = "Zoom Out", .keys = "⌘−", .run = AppState.zoomOut },
-    .{ .title = "Actual Size", .keys = "⌘0", .run = AppState.zoomReset },
+    .{ .title = "Toggle Terminal", .keys = "⌘J", .run = terminal.toggle },
+    .{ .title = "Zoom In", .keys = "⌘+", .run = font_actions.zoomIn },
+    .{ .title = "Zoom Out", .keys = "⌘−", .run = font_actions.zoomOut },
+    .{ .title = "Actual Size", .keys = "⌘0", .run = font_actions.zoomReset },
     .{ .title = "Settings…", .keys = "⌘,", .run = settings_window.open },
     .{ .title = "Appearance", .children = &.{
         .{ .title = "System", .run = appearance(.system) },
@@ -44,7 +50,7 @@ pub const root = [_]Command{
 fn flip(comptime sw: Settings.Switch) Run {
     return struct {
         fn run(s: *AppState, g: *gooey.Window) void {
-            s.flipSetting(g, sw);
+            settings_actions.flip(s, g, sw);
         }
     }.run;
 }
@@ -52,7 +58,7 @@ fn flip(comptime sw: Settings.Switch) Run {
 fn appearance(comptime mode: Settings.Appearance) Run {
     return struct {
         fn run(s: *AppState, g: *gooey.Window) void {
-            s.setAppearance(g, mode);
+            settings_actions.setAppearance(s, g, mode);
         }
     }.run;
 }

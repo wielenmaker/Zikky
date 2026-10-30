@@ -7,6 +7,8 @@ const gooey = @import("gooey");
 const tabs = @import("tabs.zig");
 const session = @import("session.zig");
 const AppState = @import("state.zig").AppState;
+const workspace = @import("workspace.zig");
+const tab_actions = @import("tab_actions.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -51,7 +53,7 @@ fn createFile(s: *AppState, g: *gooey.Window, text: []const u8) ?u32 {
     if (s.tree.node_count == 0) return null;
     const path = gooey.file_dialog.promptForNewPath(s.arena, .{ .directory = s.paths[0], .suggested_name = "untitled.txt", .prompt = "Save" }) orelse return null;
     std.Io.Dir.writeFile(.cwd(), g.io, .{ .sub_path = path, .data = text }) catch return null;
-    s.refreshTree(g, "", "");
+    workspace.refresh(s, g, "", "");
     const root = s.paths[0];
     if (!std.mem.startsWith(u8, path, root)) return null;
     return session.find(s, std.mem.trimStart(u8, path[root.len..], "/"));
@@ -59,7 +61,7 @@ fn createFile(s: *AppState, g: *gooey.Window, text: []const u8) ?u32 {
 
 /// A tab's × or ⌘W: closes it, asking first when it has unsaved changes.
 pub fn close(s: *AppState, g: *gooey.Window, i: u8) void {
-    if (!dirty(g, &s.tabs.list[i])) return s.dropTab(g, i);
+    if (!dirty(g, &s.tabs.list[i])) return tab_actions.drop(s, g, i);
     g.deferCommandWith(i, confirmClose);
 }
 
@@ -69,8 +71,8 @@ fn confirmClose(s: *AppState, g: *gooey.Window, i: u8) void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const message = std.fmt.bufPrintSentinel(&buf, "Do you want to save the changes you made to {s}?", .{s.tabName(t)}, 0) catch return;
     switch (gooey.platform.macos.alert.ask(message, "Your changes will be lost if you don't save them.", &.{ "Save", "Don't Save", "Cancel" }) orelse return) {
-        0 => if (saveTab(s, g, t)) s.dropTab(g, i),
-        1 => s.dropTab(g, i),
+        0 => if (saveTab(s, g, t)) tab_actions.drop(s, g, i),
+        1 => tab_actions.drop(s, g, i),
         else => {},
     }
 }
@@ -87,7 +89,7 @@ fn saveScratch(s: *AppState, g: *gooey.Window) void {
     const node = createFile(s, g, ce.getText()) orelse return;
     ce.clear();
     tabs.scratch = "";
-    s.openInNewTab(g, node);
+    tab_actions.openNew(s, g, node);
 }
 
 pub const Badge = struct {

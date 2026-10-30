@@ -6,12 +6,15 @@ const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const titlebar = @import("titlebar.zig");
 const AppState = @import("state.zig").AppState;
+const workspace = @import("workspace.zig");
 const file_kind = @import("file_kind.zig");
 const IconButton = @import("icon_button.zig").IconButton;
 const FileIcon = @import("file_icon.zig").FileIcon;
 const fade_label = @import("fade_label.zig");
 const rename = @import("rename.zig");
 const clickable = @import("clickable.zig");
+const row_menu = @import("row_menu.zig");
+const tab_actions = @import("tab_actions.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -49,7 +52,7 @@ const Header = struct {
         }, .{
             IconButton{ .icon = Lucide.panel_left_close, .on_click = cx.command(AppState.toggleSidebar) },
             ui.box(.{ .grow_width = true }, .{}),
-            IconButton{ .icon = Lucide.plus, .on_click = cx.command(AppState.openFolder) },
+            IconButton{ .icon = Lucide.plus, .on_click = cx.command(workspace.openFolder) },
         }));
     }
 };
@@ -99,7 +102,7 @@ const Row = struct {
             clickable.box(.{
                 .fill = if (active) theme.color.background else Color.transparent,
                 .hover = if (active) null else theme.color.sidebar_accent.withAlpha(0.65),
-                .on_click = cx.commandWith(index, AppState.onRowClick),
+                .on_click = cx.commandWith(index, onRowClick),
             }, .{
                 .grow_width = true,
                 .height = theme.row_height,
@@ -203,3 +206,11 @@ const Icon = struct {
         }));
     }
 };
+
+fn onRowClick(s: *AppState, g: *gooey.Window, entry_index: u32) void {
+    const e = s.tree.getEntry(entry_index) orelse return;
+    if (row_menu.isMenuClick(g)) return g.deferCommandWith(e.node_index, row_menu.show);
+    if (rename.node == e.node_index) return;
+    if (e.is_folder) return s.tree.toggleExpand(entry_index);
+    tab_actions.open(s, g, e.node_index);
+}

@@ -7,6 +7,7 @@ const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const titlebar = @import("titlebar.zig");
 const AppState = @import("state.zig").AppState;
+const tab_actions = @import("tab_actions.zig");
 const file_kind = @import("file_kind.zig");
 const IconButton = @import("icon_button.zig").IconButton;
 const FileIcon = @import("file_icon.zig").FileIcon;
@@ -75,7 +76,7 @@ const Tab = struct {
         const kind = file_kind.of(self.name);
         cx.render(clickable.box(.{
             .fill = if (self.shown) theme.color.tab_bg else Color.transparent,
-            .on_click = cx.commandWith(self.index, AppState.selectTab),
+            .on_click = cx.commandWith(self.index, tab_actions.select),
         }, .{
             .height = height,
             .direction = .row,
@@ -107,7 +108,7 @@ const Tab = struct {
                     .color = if (self.shown) theme.color.tab_fg else theme.color.muted,
                     .paint = if (self.shown) fade_label.fadeTo("tab_bg") else fade_label.fadeTo("sidebar_bg"),
                 },
-                IconButton{ .icon = Lucide.x, .icon_size = 14, .on_click = cx.commandWith(self.index, AppState.closeTab) },
+                IconButton{ .icon = Lucide.x, .icon_size = 14, .on_click = cx.commandWith(self.index, tab_actions.close) },
             }),
         }));
     }
