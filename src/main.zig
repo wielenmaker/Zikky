@@ -29,7 +29,7 @@ var app: gooey.runtime.MultiWindowApp = undefined;
 var last: ?session.Session = null;
 
 fn onInit(cx: *Cx, s: *AppState) void {
-    // UI text uses the primary face (SF Pro); the editor uses Paper Mono.
+    // UI text uses the primary face (SF Pro); the editor uses JetBrains Mono.
     const ts = cx.window().resources.text_system;
     s.main = cx.window();
     s.applyFont(cx.window());
