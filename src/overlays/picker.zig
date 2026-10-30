@@ -71,7 +71,7 @@ pub fn refresh(s: *AppState, g: *gooey.Window) void {
 
     p.count = 0;
     p.total = 0;
-    for (1..s.tree.node_count) |n| {
+    for (1..@max(1, s.tree.node_count)) |n| {
         const id: u32 = @intCast(n);
         if (s.tree.nodes[id].is_folder) continue;
         p.total += 1;

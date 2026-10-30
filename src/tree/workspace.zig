@@ -1,5 +1,5 @@
-//! The opened folder: loading it into the tree, switching folders, the recent
-//! folders, and rebuilding the tree after files change.
+//! The opened folder: loading it into the tree, switching folders, the
+//! editor-only window with none open, and rebuilding the tree after files change.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -13,7 +13,7 @@ const AppState = state.AppState;
 
 /// The opened folder is the tree's one root, expanded, with its contents under it.
 pub fn load(s: *AppState, io: std.Io) void {
-    if (s.welcome()) return;
+    if (s.noFolder()) return;
     const full = std.Io.Dir.realPathFileAlloc(.cwd(), io, s.root, s.arena) catch s.root;
     const top = s.add(null, std.fs.path.basename(full), full, true) orelse return;
     fs_tree.addDir(s, io, s.root, top);
@@ -34,38 +34,27 @@ fn promptFolder(s: *AppState, g: *gooey.Window) void {
     openRoot(s, g, s.arena.dupe(u8, picked.paths[0]) catch return);
 }
 
-/// A folder in the welcome screen's recent list; one that is gone leaves the list.
-pub fn openRecent(s: *AppState, g: *gooey.Window, i: u8) void {
-    if (i >= s.recent_count) return;
-    if (std.Io.Dir.access(.cwd(), g.io, s.recent[i], .{})) {
-        openRoot(s, g, s.recent[i]);
-    } else |_| {
-        std.mem.copyForwards([]const u8, s.recent[i .. s.recent_count - 1], s.recent[i + 1 .. s.recent_count]);
-        s.recent_count -= 1;
-    }
+/// With no folder open: just the editor, on an Untitled tab, the sidebar shut.
+pub fn untitled(s: *AppState, g: *gooey.Window) void {
+    s.sidebar_open = false;
+    s.tabs.current = s.tabs.add(g, tabs.untitled, "") orelse return;
+    s.tabs.focus = true;
 }
 
-/// Shows `path` in the tree in place of the current folder.
+/// The sidebar asked for with no folder open. Deferred: the alert runs a nested event loop.
+pub fn askFolder(s: *AppState, g: *gooey.Window) void {
+    const alert = gooey.platform.macos.alert;
+    if (alert.ask("Open a folder first", "The sidebar shows the files of an open folder.", &.{ "Open Folder…", "Cancel" }) == 0) promptFolder(s, g);
+}
+
+/// Shows `path` in the tree in place of the current folder. Coming from no
+/// folder, the Untitled tabs stay.
 pub fn openRoot(s: *AppState, g: *gooey.Window, path: []const u8) void {
+    if (!s.noFolder()) closeAll(s, g);
     s.root = path;
-    closeAll(s, g);
+    s.sidebar_open = true;
     s.tree.clear();
     load(s, g.io);
-    if (s.tree.node_count > 0) remember(s, s.paths[0]);
-}
-
-/// Moves `path` to the front of the recent folders.
-pub fn remember(s: *AppState, path: []const u8) void {
-    var n: u8 = 0;
-    for (s.recent[0..s.recent_count]) |p| {
-        if (!std.mem.eql(u8, p, path) and n < state.max_recent - 1) {
-            s.recent[n] = p;
-            n += 1;
-        }
-    }
-    std.mem.copyBackwards([]const u8, s.recent[1 .. n + 1], s.recent[0..n]);
-    s.recent[0] = path;
-    s.recent_count = n + 1;
 }
 
 /// Rebuilds the tree after a setting that filters it changed.

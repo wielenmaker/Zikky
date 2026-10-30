@@ -106,7 +106,7 @@ pub fn ensure(s: *AppState, g: *gooey.Window, cols: u16, rows: u16) ?*Session {
         t.resize(cols, rows, @intFromFloat(s.cell_w), @intFromFloat(s.cell_h));
         return t;
     }
-    const cwd = s.arena.dupeSentinel(u8, s.paths[0], 0) catch return null;
+    const cwd = s.arena.dupeSentinel(u8, if (s.noFolder()) "." else s.paths[0], 0) catch return null;
     sl.session = Session.start(std.heap.smp_allocator, g.io, cwd, cols, rows, onOutput) catch null;
     return sl.session;
 }

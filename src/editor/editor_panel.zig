@@ -12,7 +12,6 @@ const tabs = @import("tabs.zig");
 const syntax = @import("../syntax/syntax.zig");
 const FindBar = @import("find_bar.zig").FindBar;
 const terminal = @import("../terminal/terminal.zig");
-const save = @import("save.zig");
 const TermPanel = @import("../terminal/term_view.zig").TermPanel;
 
 const ui = gooey.ui;
@@ -105,7 +104,7 @@ const Container = struct {
                 .cursor_color = theme.color.primary,
             }),
             ui.when(s.find.open, .{FindBar{}}),
-        }), ui.when(save.unsaved(s, cx.window()), .{save.Badge{}})}));
+        })}));
         if (!s.picker.open) if (tabs.editor(cx.window(), id)) |ce| prepare(s, cx.window(), ce, id);
     }
 };

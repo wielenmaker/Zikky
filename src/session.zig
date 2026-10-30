@@ -1,6 +1,5 @@
 //! The last session, kept in session.json: the folder, its expanded folders,
-//! the open tabs with their cursor and scroll, the sidebar, and the folders
-//! opened before (the welcome screen's list). AppKit keeps
+//! the open tabs with their cursor and scroll, and the sidebar. AppKit keeps
 //! the window frame itself (`autosaveFrame`).
 
 const std = @import("std");
@@ -18,8 +17,6 @@ pub const Session = struct {
     /// The shown tab.
     current: usize = 0,
     sidebar_open: bool = true,
-    /// Newest first.
-    recent: []const []const u8 = &.{},
 
     pub const file_name = "session.json";
     pub const Tab = struct { file: []const u8 = "", cursor: usize = 0, scroll_y: f32 = 0 };
@@ -51,7 +48,6 @@ pub fn save(s: *AppState, g: *gooey.Window) void {
         .tabs = open[0..n],
         .current = current,
         .sidebar_open = s.sidebar_open,
-        .recent = s.recent[0..s.recent_count],
     });
 }
 
