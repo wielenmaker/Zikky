@@ -431,7 +431,7 @@ fn renderTextArea(window: *Window, pending: *const Builder.PendingTextArea) !voi
     ta_widget.setPlaceholder(pending.style.placeholder);
     ta_widget.frame_time_us = frameTimeUs(window);
     try ta_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
-    if (ta_widget.isScrollAnimating()) window.requestRender();
+    if (ta_widget.isScrollAnimating() or ta_widget.cursor_gliding) window.requestRender();
     if (ta_widget.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
 }
 
@@ -492,8 +492,8 @@ fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor) 
     defer window.resources.text_system.useFont(0);
     ce_widget.text_area.frame_time_us = frameTimeUs(window);
     try ce_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
-    // Wheel scrolling eases over several frames; keep them coming until it settles.
-    if (ce_widget.text_area.isScrollAnimating()) window.requestRender();
+    // Wheel scrolling and the cursor glide ease over several frames; keep them coming until they settle.
+    if (ce_widget.text_area.isScrollAnimating() or ce_widget.text_area.cursor_gliding) window.requestRender();
     // The editor's caret is its embedded text area's, blink timer included.
     if (ce_widget.text_area.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
 }
