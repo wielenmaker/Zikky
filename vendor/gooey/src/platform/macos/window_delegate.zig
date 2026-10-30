@@ -53,6 +53,9 @@ pub fn registerClass() !void {
     if (!cls.addMethod("applicationWillTerminate:", applicationWillTerminate)) {
         return error.MethodAddFailed;
     }
+    if (!cls.addMethod("applicationShouldTerminate:", applicationShouldTerminate)) {
+        return error.MethodAddFailed;
+    }
 
     objc.registerClassPair(cls);
     delegate_class = cls;
@@ -112,6 +115,13 @@ fn windowDidChangeBackingProperties(self: objc.c.id, _: objc.c.SEL, _: objc.c.id
 fn windowShouldClose(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) bool {
     const window = getWindow(self) orelse return true;
     return window.handleClose();
+}
+
+/// The first window's delegate is the app's too: its close callback can cancel a quit.
+fn applicationShouldTerminate(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) c_ulong {
+    const window = getWindow(self) orelse return 1; // NSTerminateNow
+    if (window.closed) return 1;
+    return @intFromBool(window.handleClose()); // NSTerminateCancel is 0
 }
 
 fn applicationWillTerminate(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
