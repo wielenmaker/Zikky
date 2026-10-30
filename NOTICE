@@ -5,6 +5,12 @@ gooey (vendor/gooey, with local changes listed in vendor/GOOEY-CHANGES.md)
   License: vendor/gooey/LICENSE
   Includes Lucide icons (ISC). https://lucide.dev
 
+GPUI (Zed Industries, Apache-2.0; https://github.com/zed-industries/zed/tree/main/crates/gpui)
+  Parts of vendor/gooey are adapted from GPUI's Metal renderer: the gaussian drop-shadow
+  shader (platform/macos/metal/shadow.zig, platform/unified.zig), and the glyph
+  subpixel quantization and font-smoothing dilation (text/render.zig, text/cache.zig).
+  Changed files are listed in vendor/GOOEY-CHANGES.md. License: LICENSES/Apache-2.0.txt
+
 Ghostty terminal core (libghostty-vt, fetched by build.zig.zon)
   MIT, Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors.
   https://github.com/ghostty-org/ghostty
