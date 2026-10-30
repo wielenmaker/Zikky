@@ -5,6 +5,8 @@ const std = @import("std");
 const gooey = @import("gooey");
 const tabs = @import("tabs.zig");
 const AppState = @import("state.zig").AppState;
+const workspace = @import("workspace.zig");
+const tab_actions = @import("tab_actions.zig");
 
 const mac = gooey.platform.macos;
 
@@ -23,7 +25,7 @@ pub fn run(s: *AppState, g: *gooey.Window, node: u32) void {
         const t = s.tabs.list[i - 1];
         if (t.node == tabs.untitled) continue;
         const other = s.relativePath(t.node);
-        if (t.node == node or (std.mem.startsWith(u8, other, rel) and other.len > rel.len and other[rel.len] == '/')) s.dropTab(g, @intCast(i - 1));
+        if (t.node == node or (std.mem.startsWith(u8, other, rel) and other.len > rel.len and other[rel.len] == '/')) tab_actions.drop(s, g, @intCast(i - 1));
     }
-    s.refreshTree(g, "", "");
+    workspace.refresh(s, g, "", "");
 }

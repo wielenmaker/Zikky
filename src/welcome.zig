@@ -6,6 +6,7 @@ const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
+const workspace = @import("workspace.zig");
 const fade_label = @import("fade_label.zig");
 const clickable = @import("clickable.zig");
 
@@ -51,7 +52,7 @@ pub const Welcome = struct {
                 .shadow = theme.shadow_xs,
                 .padding = .{ .all = 6 },
             }, .{
-                Row{ .icon = Lucide.folder_open, .label = "Open Folder…", .hint = "⇧⌘O", .on_click = cx.command(AppState.openFolder) },
+                Row{ .icon = Lucide.folder_open, .label = "Open Folder…", .hint = "⇧⌘O", .on_click = cx.command(workspace.openFolder) },
                 ui.when(s.recent_count > 0, .{
                     ui.box(.{ .fill_width = true, .padding = .{ .each = .{ .top = 6, .right = 4, .bottom = 6, .left = 4 } } }, .{
                         ui.box(.{ .fill_width = true, .height = 1, .background = theme.color.border }, .{}),
@@ -75,7 +76,7 @@ const Recent = struct {
                 .icon = Lucide.folder,
                 .label = std.fs.path.basename(path),
                 .path = tilde(&shown[i], std.fs.path.dirname(path) orelse path),
-                .on_click = cx.commandWith(@as(u8, @intCast(i)), AppState.openRecent),
+                .on_click = cx.commandWith(@as(u8, @intCast(i)), workspace.openRecent),
             });
         }
     }
