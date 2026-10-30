@@ -11,6 +11,7 @@ const file_kind = @import("file_kind.zig");
 const IconButton = @import("icon_button.zig").IconButton;
 const FileIcon = @import("file_icon.zig").FileIcon;
 const fade_label = @import("fade_label.zig");
+const clickable = @import("clickable.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -72,15 +73,16 @@ const Tab = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const kind = file_kind.of(self.name);
-        cx.render(ui.box(.{
+        cx.render(clickable.box(.{
+            .fill = if (self.shown) theme.color.tab_bg else Color.transparent,
+            .on_click = cx.commandWith(self.index, AppState.selectTab),
+        }, .{
             .height = height,
             .direction = .row,
             .gap = 9,
             .alignment = .{ .cross = .center },
             .padding = .{ .each = .{ .top = 0, .right = if (self.max_label == 0) 10 else 4, .bottom = 0, .left = 10 } },
             .corner_radius = height / 2,
-            .background = if (self.shown) theme.color.tab_bg else Color.transparent,
-            .on_click_handler = cx.commandWith(self.index, AppState.selectTab),
         }, .{
             // The file kind's logo, white on its color, in Rex's white ring.
             ui.box(.{
