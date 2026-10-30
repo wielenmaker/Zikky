@@ -48,12 +48,13 @@ fn saveTab(s: *AppState, g: *gooey.Window, t: *tabs.Tab) bool {
 }
 
 /// Asks where to save `text`, writes it and returns the new file's node (null if
-/// cancelled, or saved outside the opened folder).
+/// cancelled, or saved outside the opened folder). With no folder open, the
+/// file's folder opens.
 fn createFile(s: *AppState, g: *gooey.Window, text: []const u8) ?u32 {
-    if (s.tree.node_count == 0) return null;
-    const path = gooey.file_dialog.promptForNewPath(s.arena, .{ .directory = s.paths[0], .suggested_name = "untitled.txt", .prompt = "Save" }) orelse return null;
+    const dir: ?[]const u8 = if (s.noFolder()) null else s.paths[0];
+    const path = gooey.file_dialog.promptForNewPath(s.arena, .{ .directory = dir, .suggested_name = "untitled.txt", .prompt = "Save" }) orelse return null;
     std.Io.Dir.writeFile(.cwd(), g.io, .{ .sub_path = path, .data = text }) catch return null;
-    workspace.refresh(s, g, "", "");
+    if (s.noFolder()) workspace.openRoot(s, g, std.fs.path.dirname(path) orelse return null) else workspace.refresh(s, g, "", "");
     const root = s.paths[0];
     if (!std.mem.startsWith(u8, path, root)) return null;
     return session.find(s, std.mem.trimStart(u8, path[root.len..], "/"));
