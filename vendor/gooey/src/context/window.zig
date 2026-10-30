@@ -1288,8 +1288,8 @@ pub const Window = struct {
         // that didn't react in the previous frame won't see a stale `true`.
         self.hover.beginFrame();
 
-        // Clear drag-over target (recalculated each frame during drag)
-        self.drag_over_target = null;
+        // `drag_over_target` stays: input sets it on each drag move and clears it
+        // on drop or cancel, and nothing during the frame would set it again.
 
         // Accessibility: periodic screen reader poll + tree begin
         // (a11y subsystem owns the counter and the enabled latch).
