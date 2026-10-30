@@ -51,7 +51,7 @@ fn createFile(s: *AppState, g: *gooey.Window, text: []const u8) ?u32 {
     if (s.tree.node_count == 0) return null;
     const path = gooey.file_dialog.promptForNewPath(s.arena, .{ .directory = s.paths[0], .suggested_name = "untitled.txt", .prompt = "Save" }) orelse return null;
     std.Io.Dir.writeFile(.cwd(), g.io, .{ .sub_path = path, .data = text }) catch return null;
-    s.refreshTree(g);
+    s.refreshTree(g, "", "");
     const root = s.paths[0];
     if (!std.mem.startsWith(u8, path, root)) return null;
     return session.find(s, std.mem.trimStart(u8, path[root.len..], "/"));

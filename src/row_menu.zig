@@ -3,11 +3,15 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const AppState = @import("state.zig").AppState;
+const rename = @import("rename.zig");
+const delete = @import("delete.zig");
 
 const mac = gooey.platform.macos;
 
-const file_items = [_][:0]const u8{ "Open", "Open in New Tab", "Reveal in Finder", "Copy Path", "Copy Relative Path" };
-const folder_items = [_][:0]const u8{ "Reveal in Finder", "Copy Path", "Copy Relative Path" };
+const file_items = [_][:0]const u8{ "Open", "Open in New Tab", "Reveal in Finder", "Copy Path", "Copy Relative Path", "Rename", "Delete" };
+const folder_items = [_][:0]const u8{ "Reveal in Finder", "Copy Path", "Copy Relative Path", "Rename", "Delete" };
+/// The opened folder itself stays where it is.
+const root_items = [_][:0]const u8{ "Reveal in Finder", "Copy Path" };
 
 /// Right click, or control-click as macOS treats it.
 pub fn isMenuClick(g: *gooey.Window) bool {
@@ -17,9 +21,9 @@ pub fn isMenuClick(g: *gooey.Window) bool {
 /// Shows the menu for `node` and runs the picked item. Deferred: the menu
 /// runs a nested event loop.
 pub fn show(s: *AppState, g: *gooey.Window, node: u32) void {
-    const folder = s.tree.nodes[node].is_folder;
-    const picked = mac.menu.popUp(if (folder) &folder_items else &file_items) orelse return;
-    const item = if (folder) folder_items[picked] else file_items[picked];
+    const items: []const [:0]const u8 = if (node == 0) &root_items else if (s.tree.nodes[node].is_folder) &folder_items else &file_items;
+    const picked = mac.menu.popUp(items) orelse return;
+    const item = items[picked];
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = absolute(s, node, &buf) catch return;
     if (std.mem.eql(u8, item, "Open")) {
@@ -30,8 +34,12 @@ pub fn show(s: *AppState, g: *gooey.Window, node: u32) void {
         reveal(g.io, path);
     } else if (std.mem.eql(u8, item, "Copy Path")) {
         _ = mac.clipboard.setText(path);
-    } else {
+    } else if (std.mem.eql(u8, item, "Copy Relative Path")) {
         _ = mac.clipboard.setText(s.relativePath(node));
+    } else if (std.mem.eql(u8, item, "Rename")) {
+        rename.start(s, g, node);
+    } else {
+        delete.run(s, g, node);
     }
 }
 
