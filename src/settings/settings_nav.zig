@@ -96,7 +96,7 @@ const Item = struct {
                 .background = self.pane.tint,
                 .alignment = .{ .main = .center, .cross = .center },
             }, .{
-                Svg{ .path = self.pane.icon, .size = 12, .no_fill = true, .stroke_color = gooey.Color.white, .stroke_width = 2 },
+                Svg{ .path = self.pane.icon, .size = 12, .no_fill = true, .stroke_color = gooey.Color.white, .stroke_width = 1.5 },
             }),
             ui.text(self.pane.name, .{
                 .size = theme.settings.text_size,
