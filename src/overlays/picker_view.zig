@@ -81,7 +81,8 @@ const Query = struct {
             .gap = 6,
         }, .{
             Svg{ .path = Lucide.chevron_right, .size = 16, .no_fill = true, .stroke_color = theme.color.primary, .stroke_width = 2 },
-            field.bare("picker-query", .{ .bind = &p.query, .placeholder = "Search files" }),
+            // Fills only what the count leaves, so the count stays inside the card.
+            ui.box(.{ .grow_width = true }, .{field.bare("picker-query", .{ .bind = &p.query, .placeholder = "Search files" })}),
             ui.textFmt("{d}/{d}", .{ p.count, p.total }, .{ .size = 13, .color = theme.color.muted }),
         }));
         if (p.focus_query) {
@@ -109,8 +110,8 @@ const List = struct {
 const Row = struct {
     fn render(index: u32, cx: *Cx) void {
         const s = cx.state(AppState);
-        const node = s.picker.node(index);
-        const kind = file_kind.of(s.names[node]);
+        const path = s.picker.path(index);
+        const kind = file_kind.of(std.fs.path.basename(path));
         cx.render(clickable.box(.{
             .fill = if (index == s.picker.selected) theme.color.sidebar_accent else Color.transparent,
             .on_click = cx.commandWith(index, picker.pick),
@@ -124,7 +125,7 @@ const Row = struct {
             .corner_radius = theme.radius,
         }, .{
             FileIcon{ .kind = kind, .size = 14 },
-            Path{ .path = s.relativePath(node), .query = s.picker.query },
+            Path{ .path = path, .query = s.picker.query },
         }));
     }
 };
@@ -172,7 +173,7 @@ const Runs = struct {
 const Title = struct {
     pub fn render(_: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
-        const name = if (s.picker.shown) |n| s.names[n] else "";
+        const name = s.picker.shownName();
         cx.render(ui.box(.{
             .fill_width = true,
             .height = header_height,

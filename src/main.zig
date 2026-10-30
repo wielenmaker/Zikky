@@ -77,6 +77,7 @@ fn render(cx: *Cx) void {
         ui.onActionHandler(editor_font.ZoomReset, cx.command(font_actions.zoomReset)),
         ui.onActionHandler(sidebar.ToggleSidebar, cx.command(AppState.toggleSidebar)),
         ui.onActionHandler(app_menu.CloseFile, cx.command(tab_actions.closeShown)),
+        ui.onActionHandler(app_menu.OpenFile, cx.command(workspace.openFile)),
         ui.onActionHandler(app_menu.OpenFolder, cx.command(workspace.openFolder)),
         ui.onActionHandler(app_menu.OpenSettings, cx.command(settings_window.open)),
         ui.onActionHandler(app_menu.QuickOpen, cx.command(picker.open)),

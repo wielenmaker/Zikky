@@ -8,6 +8,7 @@ const store = @import("store.zig");
 const AppState = @import("state.zig").AppState;
 const tab_actions = @import("editor/tab_actions.zig");
 const tabs = @import("editor/tabs.zig");
+const fs_tree = @import("tree/fs_tree.zig");
 
 pub const Session = struct {
     folder: []const u8 = "",
@@ -55,14 +56,11 @@ pub fn save(s: *AppState, g: *gooey.Window) void {
 /// scroll are applied once its editor exists (`Tab.pending`).
 pub fn restore(s: *AppState, g: *gooey.Window, ses: Session) void {
     s.sidebar_open = ses.sidebar_open;
-    for (1..s.tree.node_count) |n| {
-        const node: u32 = @intCast(n);
-        for (ses.expanded) |e| if (std.mem.eql(u8, e, s.relativePath(node))) s.tree.expandNode(node);
-    }
+    for (ses.expanded) |e| if (fs_tree.find(s, g.io, e)) |n| fs_tree.expand(s, g.io, n);
     s.tree.rebuild();
     var current: u8 = 0;
     for (ses.tabs, 0..) |saved, i| {
-        const node = find(s, saved.file) orelse continue;
+        const node = find(s, g.io, saved.file) orelse continue;
         tab_actions.openNew(s, g, node);
         s.tabs.active().?.pending = .{ .cursor = saved.cursor, .scroll_y = saved.scroll_y };
         if (i == ses.current) current = s.tabs.current;
@@ -70,10 +68,8 @@ pub fn restore(s: *AppState, g: *gooey.Window, ses: Session) void {
     tab_actions.select(s, g, current);
 }
 
-pub fn find(s: *AppState, rel: []const u8) ?u32 {
-    for (1..s.tree.node_count) |n| {
-        const node: u32 = @intCast(n);
-        if (!s.tree.nodes[node].is_folder and std.mem.eql(u8, rel, s.relativePath(node))) return node;
-    }
-    return null;
+/// The file at `rel`, loading the folders on the way.
+pub fn find(s: *AppState, io: std.Io, rel: []const u8) ?u32 {
+    const node = fs_tree.find(s, io, rel) orelse return null;
+    return if (node == 0 or s.tree.nodes[node].is_folder) null else node;
 }
