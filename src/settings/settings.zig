@@ -14,7 +14,7 @@ pub const Settings = struct {
     show_hidden: bool = false,
     /// Comma-separated folder names the tree skips.
     exclude: []const u8 = ".git, .zig-cache, node_modules, target, zig-out, zig-pkg",
-    restore_session: bool = true,
+    restore_session: bool = false,
     /// Shortcuts changed from their defaults (Settings › Keyboard).
     shortcuts: []const Shortcut = &.{},
 

@@ -22,9 +22,7 @@ const find = @import("editor/find.zig");
 const palette = @import("overlays/palette.zig");
 const PaletteView = @import("overlays/palette_view.zig").PaletteView;
 const terminal = @import("terminal/terminal.zig");
-const welcome = @import("welcome.zig");
 const save = @import("editor/save.zig");
-const assets = @import("assets");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -45,7 +43,7 @@ fn onInit(cx: *Cx, s: *AppState) void {
     settings_actions.applyVim(s, cx.window());
     cx.window().platform_window.?.autosaveFrame("Zikky");
     workspace.load(s, cx.window().io);
-    if (s.tree.node_count > 0) workspace.remember(s, s.paths[0]);
+    if (s.noFolder()) workspace.untitled(s, cx.window());
     if (last) |ses| session.restore(s, cx.window(), ses);
 }
 
@@ -61,15 +59,6 @@ fn render(cx: *Cx) void {
     appearance.sync();
     appearance.background(cx.window(), theme.color.sidebar_bg);
     const size = cx.windowSize();
-    if (cx.state(AppState).welcome()) return cx.render(ui.box(.{
-        .width = size.width,
-        .height = size.height,
-        .background = theme.color.sidebar_bg,
-    }, .{
-        ui.onActionHandler(app_menu.OpenFolder, cx.command(workspace.openFolder)),
-        ui.onActionHandler(app_menu.OpenSettings, cx.command(settings_window.open)),
-        welcome.Welcome{ .width = size.width, .height = size.height },
-    }));
     const sidebar_width: f32 = if (cx.state(AppState).sidebar_open) theme.sidebar_width else 0;
     cx.render(ui.box(.{
         .width = size.width,
@@ -127,7 +116,7 @@ test {
 
 /// `zikky [folder]` opens `folder`; without one, the last session's folder
 /// (if restoring is on), else the current directory, or from the app bundle
-/// the welcome screen.
+/// none: just the editor, with an Untitled tab.
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     state.arena = init.arena.allocator();
@@ -138,18 +127,13 @@ pub fn main(init: std.process.Init) !void {
     if (init.environ_map.get("HOME")) |home| if (bundled) std.process.setCurrentPath(init.io, home) catch {};
     if (bundled) state.root = "";
     if (args.len > 1) state.root = args[1];
-    welcome.home = init.environ_map.get("HOME") orelse "";
     if (init.environ_map.get("HOME")) |home| store.dir = try std.fs.path.join(state.arena, &.{ home, "Library/Application Support/Zikky" });
     state.settings = store.load(Settings, state.arena, init.io, Settings.file);
     const ses = store.load(session.Session, state.arena, init.io, session.Session.file_name);
-    // Oldest first, so the newest ends up in front.
-    var i = ses.recent.len;
-    while (i > 0) : (i -= 1) if (exists(init.io, ses.recent[i - 1])) workspace.remember(&state, ses.recent[i - 1]);
     if (args.len == 1 and state.settings.restore_session and ses.folder.len > 0 and exists(init.io, ses.folder)) {
         state.root = ses.folder;
         last = ses;
     }
-    gooey.image.loader.embedded = &.{.{ .name = welcome.logo, .data = assets.logo }};
     try app.initInPlace(init.gpa, .{ .font_size = theme.ui_font_size }, init.io);
     appearance.apply(state.settings.appearance);
     app.quit_policy = .last_window_closed;
