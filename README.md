@@ -2,6 +2,8 @@
 
 A small native code editor for macOS, written in Zig on [gooey](https://github.com/duanebester/gooey).
 
+![Zikky](docs/screenshot.png)
+
 - File tree, tabs, soft wrap, find, quick open (⌘P), command palette (⇧⌘P)
 - Syntax highlighting for ~25 language families
 - Built-in terminal (⌘J, powered by Ghostty's terminal core)
@@ -31,4 +33,4 @@ Issues and pull requests are welcome.
 
 ## License
 
-[MIT](LICENSE). Third-party notices are in [NOTICE](NOTICE).
+[MIT](LICENSE). Third-party notices are in [NOTICE](NOTICE). Security reports: [SECURITY.md](SECURITY.md).
