@@ -4,6 +4,7 @@ const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
+const settings_actions = @import("settings_actions.zig");
 const panes = @import("settings_panes.zig");
 const clickable = @import("clickable.zig");
 
@@ -82,7 +83,7 @@ const Item = struct {
     pub fn render(self: @This(), cx: *Cx) void {
         cx.render(clickable.box(.{
             .fill = if (self.selected) theme.color.settings.selected else gooey.Color.transparent,
-            .on_click = cx.commandWith(self.index, AppState.selectPane),
+            .on_click = cx.commandWith(self.index, settings_actions.selectPane),
         }, .{
             .fill_width = true,
             .height = 32,

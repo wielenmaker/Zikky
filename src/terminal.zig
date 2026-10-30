@@ -17,6 +17,18 @@ pub const Slot = struct {
     open: bool = false,
 };
 
+/// The panel's state in `AppState.term`.
+pub const Panel = struct {
+    /// The terminal with no tab open (each tab has its own).
+    bare: Slot = .{},
+    /// Keys go to the shown terminal.
+    focus: bool = false,
+    height: f32 = 260,
+    /// Where the terminal was drawn, and whether the gap above it is being dragged.
+    rect: Rect = .{},
+    drag: bool = false,
+};
+
 pub const min_height: f32 = 80;
 /// The editor keeps at least this much of the panel.
 const min_editor: f32 = 120;
@@ -47,7 +59,7 @@ pub fn bindKeys(g: *gooey.Window) void {
 
 /// The shown tab's slot.
 pub fn slot(s: *AppState) *Slot {
-    return if (s.tabs.active()) |t| &t.term else &s.term_bare;
+    return if (s.tabs.active()) |t| &t.term else &s.term.bare;
 }
 
 /// The shown tab's terminal, while its panel is open.
@@ -60,19 +72,19 @@ pub fn shown(s: *AppState) ?*Session {
 /// focused; else closes it and gives the editor the focus back.
 pub fn toggle(s: *AppState, g: *gooey.Window) void {
     const sl = slot(s);
-    if (sl.open and s.term_focus) {
+    if (sl.open and s.term.focus) {
         sl.open = false;
         blur(s);
     } else {
         sl.open = true;
-        s.term_focus = true;
+        s.term.focus = true;
         g.blurAll();
     }
     g.requestRender();
 }
 
 fn blur(s: *AppState) void {
-    s.term_focus = false;
+    s.term.focus = false;
     s.tabs.focus = true;
 }
 
@@ -109,33 +121,33 @@ fn onOutput(_: *Session) void {
 /// back, and while focused the keys go to the shell (⌘ shortcuts pass, ⌘V
 /// pastes).
 pub fn capture(s: *AppState, g: *gooey.Window, event: gooey.input.InputEvent) bool {
-    const r = s.term_rect;
+    const r = s.term.rect;
     const open = shown(s) != null;
     switch (event) {
         .mouse_down => |m| {
             const divider = Rect{ .x = r.x, .y = r.y - theme.inset, .w = r.w, .h = theme.inset };
             if (open and divider.contains(m.position)) {
-                s.term_drag = true;
+                s.term.drag = true;
                 return true;
             }
             if (open and r.contains(m.position)) {
-                s.term_focus = true;
+                s.term.focus = true;
                 g.blurAll();
                 g.requestRender();
                 return true;
             }
-            if (s.term_focus) blur(s);
+            if (s.term.focus) blur(s);
             return false;
         },
-        .mouse_dragged => |m| if (s.term_drag) {
+        .mouse_dragged => |m| if (s.term.drag) {
             const bottom = r.y + r.h;
             const top = theme.titlebar_height + min_editor + theme.inset;
-            s.term_height = std.math.clamp(bottom - @as(f32, @floatCast(m.position.y)), min_height, @max(min_height, bottom - top));
+            s.term.height = std.math.clamp(bottom - @as(f32, @floatCast(m.position.y)), min_height, @max(min_height, bottom - top));
             g.requestRender();
             return true;
         },
-        .mouse_up => if (s.term_drag) {
-            s.term_drag = false;
+        .mouse_up => if (s.term.drag) {
+            s.term.drag = false;
             return true;
         },
         .scroll => |e| if (open and r.contains(e.position)) {
@@ -146,7 +158,7 @@ pub fn capture(s: *AppState, g: *gooey.Window, event: gooey.input.InputEvent) bo
             g.requestRender();
             return true;
         },
-        .key_down => |k| if (s.term_focus) if (shown(s)) |t| {
+        .key_down => |k| if (s.term.focus) if (shown(s)) |t| {
             if (k.key == .j and k.modifiers.cmd) {
                 toggle(s, g);
                 return true;
@@ -159,7 +171,7 @@ pub fn capture(s: *AppState, g: *gooey.Window, event: gooey.input.InputEvent) bo
             term_keys.press(t, k);
             return true;
         },
-        .text_input => |ti| if (s.term_focus) if (shown(s)) |t| {
+        .text_input => |ti| if (s.term.focus) if (shown(s)) |t| {
             t.write(ti.text);
             return true;
         },

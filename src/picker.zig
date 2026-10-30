@@ -5,9 +5,13 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const AppState = @import("state.zig").AppState;
+const tab_actions = @import("tab_actions.zig");
+const picker = @import("picker.zig");
 const fuzzy = @import("fuzzy.zig");
 const file_text = @import("file_text.zig");
 const syntax = @import("syntax.zig");
+const find = @import("find.zig");
+const palette = @import("palette.zig");
 
 const max_nodes = gooey.widgets.tree_list.MAX_TREE_NODES;
 const CodeEditorState = gooey.widgets.CodeEditorState;
@@ -41,7 +45,10 @@ pub const Picker = struct {
     }
 };
 
-pub fn open(s: *AppState, _: *gooey.Window) void {
+/// ⌘O / ⌘P: closes the find bar and the palette first.
+pub fn open(s: *AppState, g: *gooey.Window) void {
+    find.close(s, g);
+    if (s.palette.open) palette.close(s, g);
     const p = &s.picker;
     p.open = true;
     p.query = "";
@@ -119,7 +126,7 @@ pub fn pick(s: *AppState, g: *gooey.Window, i: u32) void {
     if (i >= s.picker.count) return;
     const n = s.picker.node(i);
     close(s, g);
-    s.openNode(g, n);
+    tab_actions.open(s, g, n);
 }
 
 /// Its part of `Window.key_capture` while open: moves, opens and closes; the rest types.

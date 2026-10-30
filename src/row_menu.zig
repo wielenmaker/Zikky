@@ -3,6 +3,7 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const AppState = @import("state.zig").AppState;
+const tab_actions = @import("tab_actions.zig");
 const rename = @import("rename.zig");
 const delete = @import("delete.zig");
 
@@ -27,9 +28,9 @@ pub fn show(s: *AppState, g: *gooey.Window, node: u32) void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = absolute(s, node, &buf) catch return;
     if (std.mem.eql(u8, item, "Open")) {
-        s.openNode(g, node);
+        tab_actions.open(s, g, node);
     } else if (std.mem.eql(u8, item, "Open in New Tab")) {
-        s.openInNewTab(g, node);
+        tab_actions.openNew(s, g, node);
     } else if (std.mem.eql(u8, item, "Reveal in Finder")) {
         reveal(g.io, path);
     } else if (std.mem.eql(u8, item, "Copy Path")) {

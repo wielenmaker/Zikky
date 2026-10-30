@@ -5,6 +5,8 @@ const gooey = @import("gooey");
 const components = @import("gooey-components");
 const theme = @import("theme.zig");
 const AppState = @import("state.zig").AppState;
+const settings_actions = @import("settings_actions.zig");
+const font_actions = @import("font_actions.zig");
 const panes = @import("settings_panes.zig");
 const clickable = @import("clickable.zig");
 const Toggle = @import("toggle.zig").Toggle;
@@ -54,9 +56,9 @@ const Header = struct {
                 .alignment = .{ .cross = .center },
                 .padding = .{ .symmetric = .{ .x = 4, .y = 0 } },
             }, .{
-                Nav{ .icon = Lucide.chevron_left, .on_click = cx.command(AppState.prevPane) },
+                Nav{ .icon = Lucide.chevron_left, .on_click = cx.command(settings_actions.prevPane) },
                 ui.box(.{ .width = 1, .height = 18, .background = theme.color.settings.divider }, .{}),
-                Nav{ .icon = Lucide.chevron_right, .on_click = cx.command(AppState.nextPane) },
+                Nav{ .icon = Lucide.chevron_right, .on_click = cx.command(settings_actions.nextPane) },
             }),
             ui.text(self.title, .{ .size = 15, .weight = .bold, .color = theme.color.settings.title }),
         }));
@@ -169,15 +171,15 @@ const Control = struct {
         switch (self.control) {
             .theme, .preview => {},
             .font => cx.render(FontButton{}),
-            .toggle => |sw| cx.render(Toggle{ .on = s.settings.get(sw), .on_click = cx.commandWith(sw, AppState.flipSetting) }),
+            .toggle => |sw| cx.render(Toggle{ .on = s.settings.get(sw), .on_click = cx.commandWith(sw, settings_actions.flip) }),
             .font_size => cx.render(Stepper{
                 .value = ui.textFmt("{d} pt", .{s.settings.font_size}, .{}).content,
-                .on_down = cx.command(AppState.zoomOut),
-                .on_up = cx.command(AppState.zoomIn),
+                .on_down = cx.command(font_actions.zoomOut),
+                .on_up = cx.command(font_actions.zoomIn),
             }),
             .exclude => cx.render(ui.input("settings-exclude", .{
                 .bind = &s.exclude_edit,
-                .on_blur_handler = cx.command(AppState.applyExclude),
+                .on_blur_handler = cx.command(settings_actions.applyExclude),
                 .width = 300,
                 .height = 24,
                 .padding = 4,

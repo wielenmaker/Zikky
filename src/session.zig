@@ -7,6 +7,7 @@ const std = @import("std");
 const gooey = @import("gooey");
 const store = @import("store.zig");
 const AppState = @import("state.zig").AppState;
+const tab_actions = @import("tab_actions.zig");
 const tabs = @import("tabs.zig");
 
 pub const Session = struct {
@@ -66,11 +67,11 @@ pub fn restore(s: *AppState, g: *gooey.Window, ses: Session) void {
     var current: u8 = 0;
     for (ses.tabs, 0..) |saved, i| {
         const node = find(s, saved.file) orelse continue;
-        s.openInNewTab(g, node);
+        tab_actions.openNew(s, g, node);
         s.tabs.active().?.pending = .{ .cursor = saved.cursor, .scroll_y = saved.scroll_y };
         if (i == ses.current) current = s.tabs.current;
     }
-    s.selectTab(g, current);
+    tab_actions.select(s, g, current);
 }
 
 pub fn find(s: *AppState, rel: []const u8) ?u32 {
