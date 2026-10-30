@@ -8,6 +8,7 @@ const AppState = @import("../state.zig").AppState;
 const app_menu = @import("../app_menu.zig");
 const SettingsPage = @import("settings_page.zig").SettingsPage;
 const appearance = @import("../appearance.zig");
+const recorder = @import("../shortcuts/recorder.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -30,6 +31,7 @@ fn show(s: *AppState, _: *gooey.Window) void {
     const plat = app.getPlatform();
     if (handle.isValid(plat)) return handle.focus(plat);
     s.exclude_edit = s.settings.exclude;
+    s.recording = null;
     handle = app.openWindow(AppState, s, render, .{
         .title = "",
         .width = 760,
@@ -50,6 +52,7 @@ pub fn hide(_: *AppState, _: *gooey.Window) void {
 fn render(cx: *Cx) void {
     appearance.sync();
     appearance.background(cx.window(), theme.color.settings.content_bg);
+    cx.window().key_capture = recorder.capture;
     const size = cx.windowSize();
     cx.render(ui.box(.{ .width = size.width, .height = size.height }, .{
         ui.onActionHandler(app_menu.CloseFile, cx.command(close)),

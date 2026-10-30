@@ -14,6 +14,7 @@ const Stepper = @import("../ui/stepper.zig").Stepper;
 const ThemeTiles = @import("theme_tiles.zig").ThemeTiles;
 const SettingsPreview = @import("settings_preview.zig").SettingsPreview;
 const FontButton = @import("font_button.zig").FontButton;
+const ShortcutField = @import("shortcut_field.zig").ShortcutField;
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -35,7 +36,13 @@ pub const SettingsPane = struct {
             .gap = 12,
         }, .{
             Header{ .title = pane.name },
-            Sections{ .pane = pane, .width = self.width - 28 },
+            // Long panes (Keyboard) scroll under the header.
+            ui.scroll("settings-scroll", .{
+                .fill_width = true,
+                .grow_height = true,
+                .scrollbar_size = 6,
+                .thumb_color = theme.color.scrollbar,
+            }, .{Sections{ .pane = pane, .width = self.width - 28 }}),
         }));
     }
 };
@@ -170,6 +177,7 @@ const Control = struct {
         const s = cx.state(AppState);
         switch (self.control) {
             .theme, .preview => {},
+            .shortcut => |id| cx.render(ShortcutField{ .id = id }),
             .font => cx.render(FontButton{}),
             .toggle => |sw| cx.render(Toggle{ .on = s.settings.get(sw), .on_click = cx.commandWith(sw, settings_actions.flip) }),
             .font_size => cx.render(Stepper{

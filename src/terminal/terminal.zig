@@ -52,9 +52,8 @@ var window: ?*gooey.Window = null;
 /// Wheel deltas below a row, carried to the next event.
 var scroll_rest: f32 = 0;
 
-pub fn bindKeys(g: *gooey.Window) void {
+pub fn init(g: *gooey.Window) void {
     window = g;
-    g.keymap().bind(Toggle, "cmd-j", null);
 }
 
 /// The shown tab's slot.

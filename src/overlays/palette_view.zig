@@ -9,6 +9,9 @@ const card = @import("../ui/card.zig");
 const field = @import("../ui/field.zig");
 const palette = @import("palette.zig");
 const clickable = @import("../ui/clickable.zig");
+const KeysLabel = @import("../ui/keys_label.zig").KeysLabel;
+const shortcuts = @import("../shortcuts/shortcuts.zig");
+const combo = @import("../shortcuts/combo.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -119,7 +122,7 @@ const Row = struct {
             .corner_radius = row_radius,
         }, .{
             ui.box(.{ .grow_width = true }, .{ui.text(c.title, .{ .size = 14, .color = theme.color.foreground })}),
-            ui.text(c.keys, .{ .size = 12, .color = theme.color.muted }),
+            KeysLabel{ .combo = if (c.shortcut) |id| combo.first(shortcuts.keys(&cx.state(AppState).settings, id)) else "", .size = 12, .color = theme.color.muted },
             ui.when(c.children.len > 0, .{
                 Svg{ .path = Lucide.chevron_right, .size = 15, .no_fill = true, .stroke_color = theme.color.muted, .stroke_width = 1.8 },
             }),
