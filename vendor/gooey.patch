@@ -691,19 +691,40 @@ index 0aabba4..08643ea 100644
      \\}
  ;
 diff --git a/src/platform/macos/mod.zig b/src/platform/macos/mod.zig
-index 4c40155..8923d7e 100644
+index 4c40155..a2e1061 100644
 --- a/src/platform/macos/mod.zig
 +++ b/src/platform/macos/mod.zig
-@@ -39,6 +39,9 @@ pub const display_link = @import("display_link.zig");
+@@ -39,6 +39,10 @@ pub const display_link = @import("display_link.zig");
  // System services
  pub const clipboard = @import("clipboard.zig");
  pub const file_dialog = @import("file_dialog.zig");
 +pub const menu = @import("menu.zig");
 +pub const alert = @import("alert.zig");
++pub const trash = @import("trash.zig");
 +pub const appearance = @import("appearance.zig");
  
  // Low-level bindings
  pub const appkit = @import("appkit.zig");
+diff --git a/src/platform/macos/trash.zig b/src/platform/macos/trash.zig
+new file mode 100644
+index 0000000..2d7e8f8
+--- /dev/null
++++ b/src/platform/macos/trash.zig
+@@ -0,0 +1,14 @@
++//! Moves a file or folder to the Trash.
++
++const objc = @import("objc");
++
++/// True once `path` is in the Trash (Finder's Put Back keeps working).
++pub fn move(path: [:0]const u8) bool {
++    const NSString = objc.getClass("NSString") orelse return false;
++    const NSURL = objc.getClass("NSURL") orelse return false;
++    const NSFileManager = objc.getClass("NSFileManager") orelse return false;
++    const string = NSString.msgSend(objc.c.id, "stringWithUTF8String:", .{path.ptr});
++    const url = NSURL.msgSend(objc.c.id, "fileURLWithPath:", .{string});
++    const manager = NSFileManager.msgSend(objc.Object, "defaultManager", .{});
++    return manager.msgSend(bool, "trashItemAtURL:resultingItemURL:error:", .{ url, @as(?*anyopaque, null), @as(?*anyopaque, null) });
++}
 diff --git a/src/platform/macos/window.zig b/src/platform/macos/window.zig
 index 58db814..509cbf9 100644
 --- a/src/platform/macos/window.zig
