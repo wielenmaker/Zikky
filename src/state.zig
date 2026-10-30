@@ -19,6 +19,7 @@ const terminal = @import("terminal.zig");
 const keys = @import("keys.zig");
 const session = @import("session.zig");
 const save = @import("save.zig");
+const rename = @import("rename.zig");
 
 const TreeListState = gooey.widgets.TreeListState;
 const CodeEditorState = gooey.widgets.CodeEditorState;
@@ -245,16 +246,18 @@ pub const AppState = struct {
         self.closeAll(g);
     }
 
-    /// Rebuilds the tree after a file was created, keeping the expanded folders and the open tabs.
-    pub fn refreshTree(self: *AppState, g: *gooey.Window) void {
+    /// Rebuilds the tree after files were created, renamed or removed, keeping the expanded
+    /// folders and the open tabs. `from` (a path from the opened folder) was renamed to `to`;
+    /// "" when nothing was.
+    pub fn refreshTree(self: *AppState, g: *gooey.Window, from: []const u8, to: []const u8) void {
         const a = std.heap.page_allocator;
         var open: [tabs.max][]const u8 = undefined;
-        for (self.tabs.items(), 0..) |t, i| open[i] = if (t.node == tabs.untitled) "" else self.relativePath(t.node);
+        for (self.tabs.items(), 0..) |t, i| open[i] = if (t.node == tabs.untitled) "" else self.moved(self.relativePath(t.node), from, to);
         var expanded: std.ArrayList([]const u8) = .empty;
         defer expanded.deinit(a);
         for (1..self.tree.node_count) |n| {
             const node: u32 = @intCast(n);
-            if (self.tree.nodes[node].is_folder and self.tree.isExpanded(node)) expanded.append(a, self.relativePath(node)) catch {};
+            if (self.tree.nodes[node].is_folder and self.tree.isExpanded(node)) expanded.append(a, self.moved(self.relativePath(node), from, to)) catch {};
         }
         self.tree.clear();
         self.load(g.io);
@@ -266,6 +269,14 @@ pub const AppState = struct {
         for (self.tabs.items(), open[0..self.tabs.count]) |*t, rel| {
             if (t.node != tabs.untitled) t.node = session.find(self, rel) orelse 0;
         }
+    }
+
+    /// `rel` once `from` is renamed to `to`: what is under it moves along.
+    fn moved(self: *AppState, rel: []const u8, from: []const u8, to: []const u8) []const u8 {
+        if (from.len == 0 or !std.mem.startsWith(u8, rel, from)) return rel;
+        const rest = rel[from.len..];
+        if (rest.len > 0 and rest[0] != '/') return rel;
+        return std.fmt.allocPrint(self.arena, "{s}{s}", .{ to, rest }) catch rel;
     }
 
     /// A node's path from the opened folder; "." for the folder itself (node 0).
@@ -286,6 +297,7 @@ pub const AppState = struct {
     pub fn onRowClick(self: *AppState, g: *gooey.Window, entry_index: u32) void {
         const e = self.tree.getEntry(entry_index) orelse return;
         if (row_menu.isMenuClick(g)) return g.deferCommandWith(e.node_index, row_menu.show);
+        if (rename.node == e.node_index) return;
         if (e.is_folder) return self.tree.toggleExpand(entry_index);
         self.openNode(g, e.node_index);
     }

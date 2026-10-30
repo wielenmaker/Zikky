@@ -41,6 +41,7 @@ pub const clipboard = @import("clipboard.zig");
 pub const file_dialog = @import("file_dialog.zig");
 pub const menu = @import("menu.zig");
 pub const alert = @import("alert.zig");
+pub const trash = @import("trash.zig");
 pub const appearance = @import("appearance.zig");
 
 // Low-level bindings

@@ -10,6 +10,7 @@ const file_kind = @import("file_kind.zig");
 const IconButton = @import("icon_button.zig").IconButton;
 const FileIcon = @import("file_icon.zig").FileIcon;
 const fade_label = @import("fade_label.zig");
+const rename = @import("rename.zig");
 const clickable = @import("clickable.zig");
 
 const ui = gooey.ui;
@@ -70,6 +71,7 @@ const TreeView = struct {
             .track_color = Color.transparent,
             .thumb_color = Color.transparent,
         }, Row.render);
+        rename.focusField(cx.window());
     }
 };
 
@@ -83,6 +85,8 @@ const Row = struct {
         const index = indexOf(s, entry);
         const active = s.active() == entry.node_index;
         const look = Look.of(s, entry, active);
+        const renaming = rename.node == entry.node_index;
+        const width = label_width - theme.indent * @as(f32, @floatFromInt(entry.depth));
 
         // Outer line: 8px side margins, then 4px + 1px so guides sit under chevrons.
         cx.render(ui.box(.{
@@ -110,12 +114,26 @@ const Row = struct {
             }, .{
                 Icon{ .kind = .{ .icon = chevron(entry), .color = theme.color.muted }, .size = 12, .slot = 16, .center = true },
                 Icon{ .kind = look.kind, .size = 14, .slot = 20, .center = false },
-                fade_label.FadeLabel{
+                ui.when(renaming, .{ui.input(rename.input_id, .{
+                    .bind = &rename.text,
+                    .width = width,
+                    .height = 22,
+                    .padding = 3,
+                    .corner_radius = 5,
+                    .background = theme.color.background,
+                    .border_color = theme.color.border,
+                    .border_color_focused = theme.color.primary,
+                    .text_color = theme.color.foreground,
+                    .cursor_color = theme.color.primary,
+                    .selection_color = theme.color.primary.withAlpha(0.18),
+                    .on_blur_handler = cx.command(rename.cancel),
+                })}),
+                ui.when(!renaming, .{fade_label.FadeLabel{
                     .text = s.names[entry.node_index],
-                    .max_width = label_width - theme.indent * @as(f32, @floatFromInt(entry.depth)),
+                    .max_width = width,
                     .color = look.label_color,
                     .paint = if (active) fade_label.fadeTo("background") else fade_label.fadeTo("sidebar_bg"),
-                },
+                }}),
             }),
         }));
     }

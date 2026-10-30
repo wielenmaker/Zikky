@@ -9,11 +9,13 @@ const palette = @import("palette.zig");
 const find = @import("find.zig");
 const terminal = @import("terminal.zig");
 const vim = @import("vim.zig");
+const rename = @import("rename.zig");
 
 pub fn capture(g: *gooey.Window, event: gooey.input.InputEvent) bool {
     const s = g.getRootState(AppState) orelse return false;
     if (s.picker.open) return picker.capture(g, event);
     if (s.palette.open) return palette.capture(g, event);
+    if (rename.capture(g, event)) return true;
     if (terminal.capture(s, g, event)) return true;
     if (s.find.open and find.capture(g, event)) return true;
     return s.settings.vim_mode and vim.capture(g, event);
