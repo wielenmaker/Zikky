@@ -12,22 +12,19 @@ const palette = @import("overlays/palette.zig");
 const terminal = @import("terminal/terminal.zig");
 const Settings = @import("settings/settings.zig").Settings;
 const shortcuts = @import("shortcuts/shortcuts.zig");
+const workspace = @import("tree/workspace.zig");
 
 const TreeListState = gooey.widgets.TreeListState;
 const CodeEditorState = gooey.widgets.CodeEditorState;
 const max_nodes = gooey.widgets.tree_list.MAX_TREE_NODES;
-pub const max_recent = 8;
 
 pub const AppState = struct {
     tree: TreeListState = TreeListState.initWithIndent(theme.row_height, theme.indent),
     names: [max_nodes][]const u8 = undefined,
     paths: [max_nodes][]const u8 = undefined,
     /// Folder shown in the tree; names and paths live in `arena`. Empty: none
-    /// is open, and the window shows the welcome screen.
+    /// is open, and the window shows just the editor.
     root: []const u8 = ".",
-    /// Folders opened before, newest first (the welcome screen's list).
-    recent: [max_recent][]const u8 = undefined,
-    recent_count: u8 = 0,
     arena: std.mem.Allocator = undefined,
     tabs: tabs.Tabs = .{},
     settings: Settings = .{},
@@ -56,12 +53,13 @@ pub const AppState = struct {
     /// The terminal panel (⌘J).
     term: terminal.Panel = .{},
 
-    /// No folder is open: the window shows the welcome screen.
-    pub fn welcome(self: *const AppState) bool {
+    /// No folder is open: the sidebar stays shut, with nothing to show.
+    pub fn noFolder(self: *const AppState) bool {
         return self.root.len == 0;
     }
 
-    pub fn toggleSidebar(self: *AppState, _: *gooey.Window) void {
+    pub fn toggleSidebar(self: *AppState, g: *gooey.Window) void {
+        if (self.noFolder()) return g.deferCommand(workspace.askFolder);
         self.sidebar_open = !self.sidebar_open;
     }
 
