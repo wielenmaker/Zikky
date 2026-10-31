@@ -23,6 +23,7 @@ cat > "$app/Contents/Info.plist" <<EOF
 	<key>CFBundleIconFile</key><string>Zikky</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>$version</string>
+	<key>LSMinimumSystemVersion</key><string>15.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
