@@ -16,6 +16,15 @@ jobs:
         with:
           version: 0.17.0
       - run: scripts/bundle.sh "${GITHUB_REF_NAME#v}"
-      - run: gh release create "$GITHUB_REF_NAME" dist/*.zip --generate-notes
+      # Notes come from CHANGELOG.md's section for this version, or GitHub's
+      # generated notes when there is none. Tags with a suffix (v0.1.0-rc1)
+      # are pre-releases.
+      - run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '/^## /{p = ($2 == v)} p' CHANGELOG.md > notes.md
+          flags=""
+          case "$version" in *-*) flags="--prerelease" ;; esac
+          if [ -s notes.md ]; then notes="--notes-file notes.md"; else notes="--generate-notes"; fi
+          gh release create "$GITHUB_REF_NAME" dist/*.zip $flags $notes
         env:
           GH_TOKEN: ${{ github.token }}
