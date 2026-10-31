@@ -25,7 +25,7 @@ const height: f32 = 30;
 const max_label: f32 = 152;
 const min_label: f32 = 48;
 /// A tab's width besides its label: padding, logo, gaps and ×.
-const chrome: f32 = 79;
+const chrome: f32 = 81;
 const gap: f32 = 4;
 
 pub const TabBar = struct {
@@ -87,8 +87,8 @@ const Tab = struct {
         }, .{
             // The file kind's logo, white on its color, in Rex's white ring.
             ui.box(.{
-                .padding = .{ .all = 1 },
-                .corner_radius = 5,
+                .padding = .{ .all = 2 },
+                .corner_radius = 6,
                 .background = theme.color.background,
                 .border_width = .{ .all = 0.5 },
                 .border_color = theme.color.tab_ring,
