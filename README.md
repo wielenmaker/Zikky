@@ -10,7 +10,7 @@ A small native code editor for macOS, written in Zig on gooey (https://github.co
 
 ## Build
 
-Requires macOS and Zig 0.17.
+Requires macOS 15 or later and Zig 0.17.
 
 ```sh
 zig build
