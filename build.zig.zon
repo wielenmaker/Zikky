@@ -1,6 +1,6 @@
 .{
     .name = .zikky,
-    .version = "0.1.0",
+    .version = "0.0.2",
     .dependencies = .{
         .gooey = .{ .path = "vendor/gooey" },
         .ghostty = .{

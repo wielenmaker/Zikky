@@ -3,7 +3,7 @@
 Each release's section is also its GitHub release notes, so keep the
 `## <version> (<date>)` heading format: `.github/workflows/release.yml` reads it.
 
-## 0.1.0 (2026-10-31)
+## 0.0.2 (2026-10-31)
 
 Requires macOS 15 or later.
 
