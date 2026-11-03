@@ -119,6 +119,7 @@ test {
     _ = @import("editor/find.zig");
     _ = @import("overlays/palette.zig");
     _ = @import("shortcuts/combo.zig");
+    _ = @import("terminal/term_wheel.zig");
 }
 
 /// `zikky [folder]` opens `folder`; without one, the last session's folder

@@ -9,6 +9,8 @@ const theme = @import("../theme.zig");
 const AppState = @import("../state.zig").AppState;
 const Session = @import("term_session.zig").Session;
 const term_keys = @import("term_keys.zig");
+const term_wheel = @import("term_wheel.zig");
+const pad = @import("term_view.zig");
 
 pub const Toggle = struct {};
 
@@ -117,7 +119,7 @@ fn onOutput(_: *Session) void {
 
 /// Its part of `Window.key_capture`: a click in the panel focuses it (one
 /// elsewhere blurs it), the gap above it resizes it, the wheel scrolls
-/// back, and while focused the keys go to the shell (⌘ shortcuts pass, ⌘V
+/// (`term_wheel`), and while focused the keys go to the shell (⌘ shortcuts pass, ⌘V
 /// pastes).
 pub fn capture(s: *AppState, g: *gooey.Window, event: gooey.input.InputEvent) bool {
     const r = s.term.rect;
@@ -153,7 +155,13 @@ pub fn capture(s: *AppState, g: *gooey.Window, event: gooey.input.InputEvent) bo
             scroll_rest -= @as(f32, @floatCast(e.delta.y)) / s.cell_h;
             const rows: isize = @intFromFloat(scroll_rest);
             scroll_rest -= @floatFromInt(rows);
-            if (rows != 0) shown(s).?.scroll(rows);
+            if (rows != 0) {
+                // The cell under the pointer, inside the border and padding.
+                const col = (@as(f32, @floatCast(e.position.x)) - r.x - 1 - pad.pad_x) / s.cell_w;
+                const row = (@as(f32, @floatCast(e.position.y)) - r.y - 1 - pad.pad_y) / s.cell_h;
+                const m = e.modifiers;
+                term_wheel.scroll(shown(s).?, rows, @intFromFloat(@max(0, col)), @intFromFloat(@max(0, row)), .{ .shift = m.shift, .ctrl = m.ctrl, .alt = m.alt });
+            }
             g.requestRender();
             return true;
         },
