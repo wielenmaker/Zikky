@@ -3,6 +3,14 @@
 Each release's section is also its GitHub release notes, so keep the
 `## <version> (<date>)` heading format: `.github/workflows/release.yml` reads it.
 
+## 0.0.3 (2026-11-03)
+
+### Fixed
+
+- The terminal scrolls in full-screen programs (less, man, vim, TUIs): the
+  wheel goes to the program as mouse reports when it asked for them, as ↑/↓ on
+  the alternate screen, and through the scrollback otherwise.
+
 ## 0.0.2 (2026-10-31)
 
 Requires macOS 15 or later.
