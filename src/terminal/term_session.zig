@@ -77,6 +77,12 @@ pub const Session = struct {
         self.pty.write(bytes);
     }
 
+    /// Bytes for the shell that leave the view where it is (wheel reports).
+    pub fn send(self: *Session, bytes: []const u8) void {
+        if (bytes.len == 0 or self.exited.load(.acquire)) return;
+        self.pty.write(bytes);
+    }
+
     pub fn resize(self: *Session, cols: u16, rows: u16, cell_w: u16, cell_h: u16) void {
         if (cols == self.cols and rows == self.rows) return;
         self.cols = cols;
@@ -85,13 +91,6 @@ pub const Session = struct {
         self.terminal.resize(self.gpa, .{ .cols = cols, .rows = rows, .cell_size_px = .{ .width = cell_w, .height = cell_h } }) catch {};
         self.unlock();
         self.pty.resize(cols, rows, cell_w, cell_h);
-    }
-
-    /// Scrolls through the scrollback by `rows` (up is negative).
-    pub fn scroll(self: *Session, rows: isize) void {
-        self.lock();
-        defer self.unlock();
-        self.terminal.scrollViewport(.{ .delta = rows });
     }
 
     /// Brings `render` up to date with the terminal.

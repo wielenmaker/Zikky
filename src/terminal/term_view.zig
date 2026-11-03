@@ -16,8 +16,8 @@ const Color = gooey.Color;
 
 const CursorShape = @FieldType(vt.RenderState.Cursor, "visual_style");
 
-const pad_x: f32 = 12;
-const pad_y: f32 = 8;
+pub const pad_x: f32 = 12;
+pub const pad_y: f32 = 8;
 
 /// A row's stretch of cells in one style.
 const Run = struct {
