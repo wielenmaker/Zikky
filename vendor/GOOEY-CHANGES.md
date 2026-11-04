@@ -84,7 +84,8 @@ Files: `src/runtime/frame.zig`*.
 
 ## 5. macOS text editing behaviour
 
-- ⌘⌫ / ⌥⌫ delete to line start / previous word; ⌘⌦ / ⌥⌦ forward.
+- ⌘⌫ / ⌥⌫ delete to line start / previous word; ⌘⌦ / ⌥⌦ forward. One-line text inputs
+  too, where the line is the whole field.
 - Word boundaries skip punctuation, like ⌥←/→ in AppKit.
 - Click-to-cursor only measures at codepoint boundaries (upstream panics clicking past a
   multi-byte character).
@@ -92,7 +93,7 @@ Files: `src/runtime/frame.zig`*.
   ⌘Q / ⌘H reach the menu bar; upstream swallowed every ⌘ key.
 
 Files: `src/widgets/text_common.zig`, `src/widgets/text_area_state.zig`*,
-`src/runtime/input.zig`*.
+`src/widgets/text_input_state.zig`*, `src/runtime/input.zig`*.
 
 ## 6. Smooth, low-latency scrolling (macOS)
 
@@ -244,3 +245,11 @@ notification, too late to ask about unsaved work.
   runs the close callback: one that returns false cancels the quit. The window clears it on deinit.
 
 Files: `src/platform/macos/window_delegate.zig`, `src/platform/macos/window.zig`.
+
+## 16. A row-resize pointer
+
+`CursorShape.resize_row`: the up/down arrows for a divider between panes (`Box.cursor`).
+macOS uses `NSCursor.resizeUpDownCursor`, Linux the `ns_resize` cursor shape.
+
+Files: `src/platform/interface.zig`, `src/platform/macos/window.zig`,
+`src/platform/linux/platform.zig`.

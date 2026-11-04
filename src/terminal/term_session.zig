@@ -27,6 +27,8 @@ pub const Session = struct {
     rows: u16,
     /// What the view draws; updated from `terminal` while rendering.
     render: vt.RenderState = .empty,
+    /// The mouse selection in progress (`term_select`).
+    gesture: vt.SelectionGesture = .init,
 
     /// Starts a shell in `cwd`. The session is heap-allocated: the reader
     /// thread and the terminal's write-back callback point into it.
@@ -62,6 +64,7 @@ pub const Session = struct {
         _ = closeFd(self.wake[0]);
         _ = closeFd(self.wake[1]);
         self.render.deinit(self.gpa);
+        self.gesture.deinit(&self.terminal);
         self.stream.deinit();
         self.terminal.deinit(self.gpa);
         self.gpa.destroy(self);
@@ -70,9 +73,11 @@ pub const Session = struct {
     /// Keys and pastes for the shell.
     pub fn write(self: *Session, bytes: []const u8) void {
         if (self.exited.load(.acquire)) return;
-        // Typing brings a scrolled-back view to the bottom, like Ghostty.
+        // Typing brings a scrolled-back view to the bottom and drops the
+        // selection, like Ghostty.
         self.lock();
         self.terminal.scrollViewport(.bottom);
+        self.terminal.screens.active.clearSelection();
         self.unlock();
         self.pty.write(bytes);
     }
@@ -132,7 +137,7 @@ pub const Session = struct {
     /// written from the reader thread while it holds the lock.
     fn writePty(handler: *vt.TerminalStream.Handler, bytes: []const u8) void {
         const stream: *vt.TerminalStream = @fieldParentPtr("handler", handler);
-        const self: *Session = @fieldParentPtr("stream", stream);
+        const self: *Session = @alignCast(@fieldParentPtr("stream", stream));
         self.pty.write(bytes);
     }
 };

@@ -1,6 +1,7 @@
-//! The terminal panel: a rounded container like the editor's, the shown
-//! tab's terminal drawn in it as rows of styled text runs in the editor's
-//! font. Each run is as wide as its cells, so the grid stays aligned.
+//! The terminal panel: a rounded container like the editor's, a header with
+//! its × on top, the shown tab's terminal drawn below as rows of styled text
+//! runs in the editor's font. Each run is as wide as its cells, so the grid
+//! stays aligned; selected cells are runs of their own.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -10,6 +11,9 @@ const AppState = @import("../state.zig").AppState;
 const terminal = @import("terminal.zig");
 const Session = @import("term_session.zig").Session;
 
+const components = @import("gooey-components");
+const IconButton = @import("../ui/icon_button.zig").IconButton;
+
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Color = gooey.Color;
@@ -18,6 +22,11 @@ const CursorShape = @FieldType(vt.RenderState.Cursor, "visual_style");
 
 pub const pad_x: f32 = 12;
 pub const pad_y: f32 = 8;
+/// The header row above the grid.
+pub const header_h: f32 = 30;
+/// The grid's top-left from the panel's, inside its border and header.
+pub const grid_x: f32 = 1 + pad_x;
+pub const grid_y: f32 = 1 + header_h;
 
 /// A row's stretch of cells in one style.
 const Run = struct {
@@ -28,6 +37,7 @@ const Run = struct {
     bg: ?Color,
     underline: bool,
     strike: bool,
+    selected: bool,
 };
 
 /// This frame's text and runs (one terminal is drawn at a time); the UI
@@ -44,7 +54,7 @@ pub const TermPanel = struct {
         const s = cx.state(AppState);
         const c = theme.color;
         const cols: u16 = @intFromFloat(@max(2, @floor((self.width - 2 * pad_x - 2) / s.cell_w)));
-        const rows: u16 = @intFromFloat(@max(1, @floor((self.height - 2 * pad_y - 2) / s.cell_h)));
+        const rows: u16 = @intFromFloat(@max(1, @floor((self.height - header_h - pad_y - 2) / s.cell_h)));
         const t = terminal.ensure(s, cx.window(), cols, rows);
         if (t) |session| {
             session.snapshot();
@@ -59,8 +69,26 @@ pub const TermPanel = struct {
             .border_width = .{ .all = 1 },
             .border_color = if (focused) c.primary.withAlpha(0.35) else c.border.withAlpha(0.8),
             .shadow = theme.shadow_xs,
-            .padding = .{ .symmetric = .{ .x = pad_x, .y = pad_y } },
-        }, .{ui.when(t != null, .{Grid{ .session = t orelse undefined }})}));
+            .padding = .{ .each = .{ .top = 0, .right = pad_x - 6, .bottom = pad_y, .left = pad_x } },
+        }, .{
+            Header{},
+            ui.when(t != null, .{Grid{ .session = t orelse undefined }}),
+        }));
+    }
+};
+
+/// "Terminal" and the × that closes the panel (the shell keeps running, like ⌘J).
+const Header = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        cx.render(ui.box(.{
+            .height = header_h,
+            .fill_width = true,
+            .direction = .row,
+            .alignment = .{ .main = .space_between, .cross = .center },
+        }, .{
+            ui.text("Terminal", .{ .size = 12, .color = theme.color.muted, .weight = .medium }),
+            IconButton{ .icon = components.Lucide.x, .icon_size = 14, .on_click = cx.command(terminal.close) },
+        }));
     }
 };
 
@@ -69,11 +97,8 @@ const Grid = struct {
 
     pub fn render(self: @This(), cx: *Cx) void {
         const s = cx.state(AppState);
-        var start: u32 = 0;
-        for (row_ends.items) |end| {
-            cx.render(Row{ .runs = runs.items[start..end], .cell_w = s.cell_w, .cell_h = s.cell_h, .size = s.settings.font_size });
-            start = end;
-        }
+        // The I-beam over the text, which can be selected.
+        cx.render(ui.box(.{ .cursor = .text }, .{Rows{}}));
         const cur = &self.session.render.cursor;
         if (cur.visible) if (cur.viewport) |v| cx.render(Cursor{
             .x = @as(f32, @floatFromInt(v.x - @intFromBool(v.wide_tail))) * s.cell_w,
@@ -83,6 +108,17 @@ const Grid = struct {
             .style = cur.visual_style,
             .focused = s.term.focus,
         });
+    }
+};
+
+const Rows = struct {
+    pub fn render(_: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        var start: u32 = 0;
+        for (row_ends.items) |end| {
+            cx.render(Row{ .runs = runs.items[start..end], .cell_w = s.cell_w, .cell_h = s.cell_h, .size = s.settings.font_size });
+            start = end;
+        }
     }
 };
 
@@ -139,8 +175,8 @@ const Cursor = struct {
             .pointer_events = .none,
             // Offsets count from the container's edge, not inside its padding.
             .floating = .{
-                .offset_x = 1 + pad_x + self.x,
-                .offset_y = 1 + pad_y + self.y + if (self.style == .underline) self.cell_h - 2 else 0,
+                .offset_x = grid_x + self.x,
+                .offset_y = grid_y + self.y + if (self.style == .underline) self.cell_h - 2 else 0,
                 .z_index = 1,
             },
         }, .{}));
@@ -161,21 +197,25 @@ fn build(t: *Session) !void {
 
     const rows = rs.row_data.slice();
     const all_cells = rows.items(.cells);
+    const all_sels = rows.items(.selection);
     for (0..rs.rows) |y| {
         const cells = all_cells[y].slice();
         const raws = cells.items(.raw);
         const styles = cells.items(.style);
         const graphemes = cells.items(.grapheme);
+        const sel = all_sels[y];
         var current: ?Run = null;
-        for (raws, styles, graphemes) |raw, cell_style, cell_extra| {
+        for (raws, styles, graphemes, 0..) |raw, cell_style, cell_extra, x| {
             if (raw.wide == .spacer_tail or raw.wide == .spacer_head) continue;
             // Both are undefined unless the cell has a style or a grapheme.
             const style: vt.Style = if (raw.style_id != 0) cell_style else .{};
             const extra: []const u21 = if (raw.content_tag == .codepoint_grapheme) cell_extra else &.{};
-            const colors = cellColors(&style, &raw, rs);
+            const selected = if (sel) |r| x >= r[0] and x <= r[1] else false;
+            var colors = cellColors(&style, &raw, rs);
+            if (selected) colors.bg = theme.color.primary.withAlpha(0.28);
             const width: u16 = if (raw.wide == .wide) 2 else 1;
             if (current) |*run| {
-                if (!sameLook(run.*, colors, style)) {
+                if (run.selected != selected or !sameLook(run.*, colors, style)) {
                     runs.appendAssumeCapacity(run.*);
                     current = null;
                 }
@@ -188,6 +228,7 @@ fn build(t: *Session) !void {
                 .bg = colors.bg,
                 .underline = style.flags.underline != .none,
                 .strike = style.flags.strikethrough,
+                .selected = selected,
             };
             const run = &current.?;
             const cp = raw.codepoint();

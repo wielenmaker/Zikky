@@ -447,7 +447,10 @@ pub const TextInputState = struct {
 
         switch (code) {
             .delete => {
-                // Backspace
+                // Backspace; ⌘ deletes to the start, ⌥ to the previous word.
+                if (!self.hasSelection() and self.cursor_byte > 0 and (mods.cmd or mods.alt)) {
+                    self.selection_anchor = if (mods.cmd) 0 else common.prevWordBoundary(self.buffer.items, self.cursor_byte);
+                }
                 if (self.hasSelection()) {
                     self.deleteSelectionWithHistory();
                 } else if (self.cursor_byte > 0) {
@@ -478,6 +481,10 @@ pub const TextInputState = struct {
                 }
             },
             .forward_delete => {
+                // ⌘ deletes to the end, ⌥ to the next word.
+                if (!self.hasSelection() and self.cursor_byte < self.buffer.items.len and (mods.cmd or mods.alt)) {
+                    self.selection_anchor = if (mods.cmd) self.buffer.items.len else common.nextWordBoundary(self.buffer.items, self.cursor_byte);
+                }
                 if (self.hasSelection()) {
                     self.deleteSelectionWithHistory();
                 } else if (self.cursor_byte < self.buffer.items.len) {

@@ -23,6 +23,7 @@ const palette = @import("overlays/palette.zig");
 const PaletteView = @import("overlays/palette_view.zig").PaletteView;
 const terminal = @import("terminal/terminal.zig");
 const save = @import("editor/save.zig");
+const watch = @import("tree/watch.zig");
 
 const ui = gooey.ui;
 const Cx = gooey.Cx;
@@ -63,6 +64,7 @@ fn onClose(cx: *Cx) bool {
 
 fn render(cx: *Cx) void {
     appearance.sync();
+    watch.sync(cx.state(AppState), cx.window());
     appearance.background(cx.window(), theme.color.sidebar_bg);
     const size = cx.windowSize();
     const sidebar_width: f32 = if (cx.state(AppState).sidebar_open) theme.sidebar_width else 0;
@@ -120,6 +122,8 @@ test {
     _ = @import("overlays/palette.zig");
     _ = @import("shortcuts/combo.zig");
     _ = @import("terminal/term_wheel.zig");
+    _ = @import("terminal/term_select.zig");
+    _ = @import("tree/watch.zig");
 }
 
 /// `zikky [folder]` opens `folder`; without one, the last session's folder

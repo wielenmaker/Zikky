@@ -22,7 +22,7 @@ const padding: f32 = 16;
 /// The area right of the sidebar; insets the container on every side the
 /// window edge touches (the left too once the sidebar is hidden). The shown
 /// tab's terminal (⌘J) sits below it in a container of its own, the inset
-/// between them a divider to drag.
+/// between them a divider to drag, with a grip and the ↕ pointer.
 pub const EditorPanel = struct {
     width: f32,
     height: f32,
@@ -49,12 +49,34 @@ pub const EditorPanel = struct {
             ui.when(!fill, .{TabBar{ .width = self.width }}),
             ui.box(.{
                 .padding = .{ .each = .{ .top = if (fill) theme.inset else 0, .right = theme.inset, .bottom = theme.inset, .left = left } },
-                .gap = theme.inset,
             }, .{
                 Container{ .width = width, .height = editor_h },
-                ui.when(term, .{TermPanel{ .width = width, .height = term_h }}),
+                ui.when(term, .{ Divider{ .width = width }, TermPanel{ .width = width, .height = term_h } }),
             }),
         }));
+    }
+};
+
+/// The inset above the terminal: a grip that darkens under the pointer or
+/// while dragged (`terminal.capture` does the dragging).
+const Divider = struct {
+    width: f32,
+
+    pub fn render(self: @This(), cx: *Cx) void {
+        const s = cx.state(AppState);
+        const id = cx.idFor(null);
+        const active = s.term.drag or cx.window().isHoveredOrDescendant(id.id);
+        cx.render(ui.box_with_layout_id(id, .{
+            .width = self.width,
+            .height = theme.inset,
+            .cursor = .resize_row,
+            .alignment = .{ .main = .center, .cross = .center },
+        }, .{ui.box(.{
+            .width = 36,
+            .height = 4,
+            .corner_radius = 2,
+            .background = if (active) theme.color.muted.withAlpha(0.8) else theme.color.border,
+        }, .{})}));
     }
 };
 
