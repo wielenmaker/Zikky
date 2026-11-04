@@ -35,6 +35,8 @@ pub fn build(b: *std.Build) void {
             exe.root_module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib" }) });
         }
     }
+    // FSEvents, which keeps the tree in step with the disk (`tree/watch.zig`).
+    exe.root_module.linkFramework("CoreServices", .{});
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);

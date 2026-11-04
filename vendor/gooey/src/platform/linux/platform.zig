@@ -1004,6 +1004,7 @@ pub const LinuxPlatform = struct {
             .default => 1,
             .text => 9,
             .pointer => 4,
+            .resize_row => 27, // ns_resize
         };
         wayland.cursorShapeDeviceSetShape(device, serial, protocol_shape);
         self.cursor_shape = shape;
