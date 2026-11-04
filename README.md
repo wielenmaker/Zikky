@@ -28,6 +28,7 @@ Issues and pull requests are welcome.
 - Branch from `main`, one feature per branch.
 - Keep changes small: one small component per file, no extra abstractions.
 - Run `zig build test` before opening a PR.
+- Fill in the PR's Changelog section; `scripts/release.sh <version>` builds the release notes from it.
 - Changes to `vendor/gooey` must be recorded in `vendor/GOOEY-CHANGES.md`.
 
 ## License
