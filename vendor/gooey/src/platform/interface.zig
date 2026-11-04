@@ -88,6 +88,8 @@ pub const CursorShape = enum(u8) {
     text,
     /// Hand/pointing-finger cursor for clickable elements (buttons, links).
     pointer,
+    /// Up/down arrows for a divider that resizes the panes above and below it.
+    resize_row,
 };
 
 // =============================================================================
