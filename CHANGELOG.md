@@ -3,6 +3,27 @@
 Each release's section is also its GitHub release notes, so keep the
 `## <version> (<date>)` heading format: `.github/workflows/release.yml` reads it.
 
+## 0.0.4 (2026-11-04)
+
+### Added
+
+- Select text in the terminal: drag, double-click a word, triple-click a line,
+  ⌘C to copy. In programs that use the mouse (vim, TUIs), hold ⇧ to select.
+- The terminal has a header with an × that hides the panel; the shell keeps running.
+
+### Changed
+
+- The divider above the terminal has a grip that darkens on hover or drag, and
+  shows a resize pointer.
+
+### Fixed
+
+- ⌘⌫ works in the terminal (delete to line start), and ⌘← / ⌘→ jump to the
+  start or end. The find bar, quick open and rename take ⌘⌫ / ⌥⌫ to delete back
+  and ⌘⌦ / ⌥⌦ to delete forward.
+- The sidebar and open files update when files change on disk. Tabs with unsaved
+  edits keep them.
+
 ## 0.0.3 (2026-11-03)
 
 ### Fixed
