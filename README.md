@@ -1,6 +1,9 @@
 # Zikky
 
-A small native code editor for macOS, written in Zig on gooey (https://github.com/duanebester/gooey). No AI, no plugins, just editing.
+A small native code editor for macOS, written in Zig on gooey (https://github.com/duanebester/gooey). 
+
+DISCLAIMER: This project is for experimental purpose only.
+
 ![Zikky](docs/screenshot.png)
 
 - File tree, tabs, soft wrap, find, quick open (⌘P), command palette (⇧⌘P)
